@@ -1,0 +1,2 @@
+def mamma():
+    return 'mamma'
