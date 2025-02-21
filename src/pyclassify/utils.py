@@ -1,12 +1,25 @@
 import os
 import yaml
+from line_profiler import profile
+from ._distance_numba_mod import _distance_numba_func
 
+@profile
 def distance(point1: list[float], point2: list[float]):
     distance=0
     for i in range(len(point1)):
         distance+=(point1[i]-point2[i])**2
     return distance**(1/2)
 
+@profile
+def distance_numpy(point1, point2):
+    return ((point1-point2)**2).sum()**(0.5)
+
+
+@profile
+def distance_numba(point1, point2):
+    return _distance_numba_func(point1, point2)
+
+@profile
 def majority_vote(neighbors: list[int]):
     classes=list(set(neighbors))
     counted=[]

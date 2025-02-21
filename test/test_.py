@@ -27,6 +27,9 @@ def test_majority_vote():
             raise Exception(f"The class {majority_vote(classes)} has been computed, instead of 1")
     
 def test_kNN():
-    cl = kNN()
-    with pytest.raises(AssertionError):
-        assert type(cl.k)!=int
+    with pytest.raises(ValueError):
+        kNN(backhand='pippo')
+    with pytest.raises(TypeError):
+        kNN(k='ciao')
+    with pytest.raises(ValueError):
+        kNN(k=-1)
