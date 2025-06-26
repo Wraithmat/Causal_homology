@@ -1,5 +1,14 @@
-.dat
-.data
+*.dat
+*.data
+lightning_logs/
+scalability.py
+cifar-10-batches-py
+cifar-10-python.tar.gz
+scalability_homology.py
+Matteo.ipynb
+*.ipynb
+scripts/experiments_ring.py
+*.npy
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
