@@ -1,10 +1,10 @@
 import numpy as np
 from scipy.spatial import distance_matrix
 from scipy.sparse import dok_matrix
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import eigsh, svds
 from scipy.linalg import eigh
 from line_profiler import profile
-from scipy.sparse.linalg import svds
+from scipy.sparse import hstack
 
 """
 We compute the homology group in different steps:
@@ -58,7 +58,7 @@ def _project_affine_space(p, points, eps=1e-9):
         return (A@coeff+points[0]).reshape(-1), [1-np.sum(coeff)]+coeff.tolist(), check
     
 @profile
-def _walking_step(points, c, cc, T, eps=1e-3):
+def _walking_step(points, c, cc, T, eps=0):
     """
     This function is used to find the correct displacement of the center of the ball
     """
@@ -187,7 +187,7 @@ def Cech_complex(points, epsilon, max_complex_dimension=2):
     assert points.shape[0] > 0, "Points should not be empty"
 
     # We introduce a distance matrix that allows to fasten the computations
-    two_epsilon_matrix = distance_matrix(points, points) + 3*epsilon*np.diag(np.ones(len(points)))
+    two_epsilon_matrix = distance_matrix(points, points) + 3*epsilon*np.eye(len(points))
     two_epsilon_matrix = two_epsilon_matrix < 2*epsilon
 
     simplices = {}
@@ -200,7 +200,7 @@ def Cech_complex(points, epsilon, max_complex_dimension=2):
         else:
             for simplex in Viet_Rips_complex:
                 r = fast_smallest_ball(points[simplex])
-                if r<=epsilon:
+                if r<epsilon:
                     Cech.append(simplex)
         simplices[i] = Cech
         if Cech == []:
@@ -276,7 +276,7 @@ def collapsed_Cech_complex(points, epsilon, max_complex_dimension=2):
                 if np.sum([boundary[j] in simplices[i-1] for j in range(i+1)]) == i+1:
                     # If the complex with the new node has all the boundaries, then we check if it is a Cech simplex
                     r = fast_smallest_ball(points[simplex])
-                    if r<=epsilon:
+                    if r<epsilon:
                         Cech.append(simplex)
             if len(Cech)==1:
                 simplices[i-1].remove(list(complex))
@@ -310,7 +310,7 @@ def Vietoris_Rips_complex(points, epsilon, max_complex_dimension=2):
     assert points.shape[0] > 0, "Points should not be empty"
 
     # We introduce a distance matrix that allows to fasten the computations
-    two_epsilon_matrix = distance_matrix(points, points) + 3*epsilon*np.diag(len(points))
+    two_epsilon_matrix = distance_matrix(points, points) + 3*epsilon*np.diag(np.ones(len(points)))
     two_epsilon_matrix = two_epsilon_matrix < 2*epsilon
 
     simplices = {}
@@ -336,8 +336,6 @@ def pair_reduction(E, B, i, a, b):
         E: dict; reduced collection of complexes, done in place
         B: dict; reduced collection of boundary matrices, done in place
     """
-
-    #### Question: should this be done in Z3?
     
     assert i+1 == len(b), f"The dimension of the generator b {b} should be equal to i+1 {i+1}"
     assert (i in E.keys()) and (i-1 in E.keys()) , f"There should be a complex indexed i {i} and {i-1}, instead we have {E.keys()}"
@@ -345,7 +343,7 @@ def pair_reduction(E, B, i, a, b):
     assert (len(a)==len(b)-1) and (a!=[]), f'a {a} should be smaller than b {b} and not empty'
     assert (b in E[i]) and (a in E[i-1]), f'a and b must be inside the complex lists'
 
-    ###print('Removing', a, b)
+    ####print('Removing', a, b)
     index_a = E[i-1].index(a)
     index_b = E[i].index(b)
 
@@ -359,24 +357,34 @@ def pair_reduction(E, B, i, a, b):
     columns_to_change = B[i][index_a].nonzero()[1]
     rows_to_change = B[i][:,index_b].nonzero()[0]
     
-    ###print('changing', rows_to_change, columns_to_change)
-    ###print(B[i][index_a],B[i][index_a].nonzero(), B[i][:,index_b], B[i][:,index_b].nonzero())
-    ###print(B[i].todense())
-    ###print(B[i-1].todense())
+    print(rows_to_change, columns_to_change)
+    ####print('changing', rows_to_change, columns_to_change)
+    ####print(B[i][index_a],B[i][index_a].nonzero(), B[i][:,index_b], B[i][:,index_b].nonzero())
+    ####print(B[i].todense())
+    ####print(B[i-1].todense())
 
     ##grid = np.meshgrid(rows_to_change, columns_to_change)
 
     bdba = B[i][index_a,index_b]
+    row_ = B[i][index_a, :]
+    col_ = B[i][:, index_b]
 
+    print('***********---------------', row_.shape, col_.shape)
 
     ##B[i][grid[0].T,grid[1].T] -= bdba * B[i][index_a*np.ones(grid[1].T.shape), grid[1].T] * B[i][grid[0].T, index_b*np.ones(grid[1].T.shape)]
     #M = B[i][rows_to_change,columns_to_change.T].toarray()
     #B[i][rows_to_change,columns_to_change.T] = M - bdba * B[i][index_a*np.ones(rows_to_change.shape), columns_to_change.T].multiply(B[i][rows_to_change, index_b*np.ones(columns_to_change.shape).T])
 
+    
+    columns_to_change = list(columns_to_change)
+    columns_to_change.remove(index_b)
     # Update elements individually due to sparse matrix indexing limitations
     for row in rows_to_change:
         for col in columns_to_change:
-            B[i][row, col] -= bdba * B[i][index_a, col] * B[i][row, index_b]
+            print('before:      ', row, col, '---', B[i][row, col])
+            print('#',bdba, B[i][index_a, col], B[i][row, index_b])
+            B[i][row, col] -= bdba * row_[0, col] * col_[row, 0]
+            print('After:         ',B[i][row,col])
 
     E[i].pop(index_b)
     E[i-1].pop(index_a)
@@ -389,7 +397,7 @@ def pair_reduction(E, B, i, a, b):
         B[i-1] = B[i-1][:,mask]
     B[i] = B[i][mask]
 
-    ###print(B[i].todense())
+    ####print(B[i].todense())
 
     ###assert False
     return E, B
@@ -406,40 +414,48 @@ def reduce_chain(E,B, maxiter=1e4):
         E: dict; reduced collection of complexes, done in place
         B: dict; reduced collection of boundary matrices, done in place
     """
-    for i in range(len(E)-1,1,-1):
+    iter = 0
+    for i in np.sort(list(B.keys()))[::-1]:
         found = True
-        iter = 0
+        
         while found and iter < maxiter:
+            # Oss: you waste one step each time you remove all points from the E[i]
             found = False
             for key in B[i].keys():        
                 if abs(B[i][key])==1:
+                    print(key) 
                     found = True
                     E, B = pair_reduction(E, B, i, E[i-1][key[0]], E[i][key[1]])
                     break
             iter += 1
-    
+        print(iter, 'stopped at', B[i].todense())
     return E, B
 
-@profile
-def reduced_homology(complex, max_k=10, sparse=True):
+@profile #!#better to change name
+def reduced_homology(complex, max_k=10, max_consistent=None, maxiter=1e4):
     """
     Given a complex, it returns the number of zero eigenvalues (at most max_k are computed).
 
     Parameters:
         complex: dict; a dictionary with the list of the n-simplices;
         max_k: int; the maximal number of zeros that will be searched for
-        sparse: bool; if True, the laplacian matrix will be computed as sparse matrix (this implies that at most min(max_k, n-1) eigenvalues will be computed)
+        max_consistent: int; it is the number of betti numbers which are expected to be computed correctly. If left as None, it is assumed that there are not k+1-simplices where k is the maximum index of the complex
     Returns:
-        counts: list; a list where each entrance is the number of 0 eigenvalues of a laplacian matrix
+        betti: list; the first max_consistent betti numbers
     """
 
     # We build the matrix representation of the border operator for each 
-    max_consistent = len(complex)
+    if max_consistent is None:
+        max_consistent = len(complex)-1
 
-    for i in range(max_consistent):
+    for i in range(min(max_consistent+1, len(complex))):
         if len(complex[i])==0:
-            del complex[i] # if the complex is empty, we don't care about the corresponding laplacian matrix
+            del complex[i]
     
+    if max_consistent+1 < len(complex):
+        for i in range(max_consistent+1, len(complex)):
+            del complex[i]
+
     B = {i: dok_matrix((len(complex[i-1]), len(complex[i])), dtype=int) for i in range(1, len(complex))}
 
     for i in range(1,len(complex)): # i=0 leads to a 1-dimensional vector of ones, we will call it when it is needed
@@ -447,41 +463,52 @@ def reduced_homology(complex, max_k=10, sparse=True):
         for j in complex[i]:
             # we do the decomposition
             boundary = [j[:k]+j[k+1:] for k in range(len(j))]
-            signs = [(-1)**k for k in range(len(j))]
+            signs = [(-1)**k for k in range(len(j))] #not a necessary step
             indices = [complex[i-1].index(k) for k in boundary] # oss: because of the sort in the procedure, we don't need to check for reverse edges
             B[i][indices,el] = signs
             el+=1
 
-    complex, B = reduce_chain(complex, B, maxiter=1e4)
+    complex, B = reduce_chain(complex, B, maxiter=maxiter)
 
+    # if there are only 1-simplices, it means I eliminated all the other n-simplices, hence I only have separate connected components
     if len(complex)==1:
         return [len(complex[0])]+[0]*(max_consistent-1)
 
-    if sparse:
-        deltas = {i: B[i].T@B[i] for i in range(1,len(complex))}
-        deltas[0] = B[1]@B[1].T
-    else:
-        deltas = {i: (B[i].T@B[i]).toarray() for i in range(1,len(complex))}
-        deltas[0] = (B[1]@B[1].T).toarray()
-
-    for i in range(2,len(complex)):
-        deltas[i-1]+=B[i]@B[i].T
-
-    eig = {i:[] for i in range(max_consistent)}
-    for i in range(len(deltas)):
-        if deltas[i].shape[0] == 0:
-            eig[i] = np.array([])
-        elif deltas[i].shape[0] == 1:
-            eig[i] = np.array([deltas[i][0,0]])
+    sing_vals = {}
+    for i in B.keys():
+        print(i, B[i].shape)
+        if B[i].shape[0] == 0:
+            sing_vals[i] = np.zeros(B[i].shape[1])
+        elif B[i].shape[1] == 0:
+            sing_vals[i] = np.ones(1)
         else:
-            if sparse:
-                eig[i] = eigsh(deltas[i], k=min(max_k,deltas[i].shape[0]-1), which='SM', return_eigenvectors=False)
-            else:
-                eig[i] = eigh(deltas[i], eigvals_only=True, subset_by_index=[0, min(max_k,deltas[i].shape[0]-1)])
-    for i in range(len(deltas), max_consistent):
-        eig[i]=eig[i] = np.array([])
-    return [np.count_nonzero([np.isclose(eig[i][j],0) for j in range(len(eig[i]))]) for i in range(len(eig))]
+            sing_vals[i] = np.zeros(B[i].shape[1])
+            #if B[i].shape[0]>B[i].shape[1]:
+            #   sing_vals[i][:min(max_k,B[i].shape[0],B[i].shape[1])] = svds(hstack([B[i].asfptype(), np.zeros([B[i].shape[0],1])]), return_singular_vectors=False, which='SM', k=min(max_k,B[i].shape[0],B[i].shape[1]), solver='propack')
+            #else:
+            #   sing_vals[i][:min(max_k,B[i].shape[0],B[i].shape[1])] = svds(B[i].asfptype(), return_singular_vectors=False, which='SM', k=min(max_k,B[i].shape[0],B[i].shape[1]), solver='propack')
+            #sing_vals[i] = np.zeros(B[i].shape[1]-np.linalg.matrix_rank(B[i].todense()))
+            print(np.linalg.matrix_rank(B[i].todense()))
+           #!# removed max_k 
+            sing_vals[i][:min(B[i].shape[0],B[i].shape[1])] = np.linalg.svd(B[i].todense(), compute_uv=False, full_matrices=False)
 
+    print('sing_vals',sing_vals)
+    print('c', complex)
+    lengths = np.array([len(complex[i]) for i in complex.keys()]+[0]*(max_consistent-len(list(complex.keys()))+1))
+    print(lengths)
+    betti = np.zeros(max_consistent, dtype=int)
+
+    # the dimension of the kernel of the maps, the first element is representing d_0, which is not computed
+    ker = np.array([len(complex[0])]+[np.count_nonzero(np.isclose(sing_vals[i],np.zeros(len(sing_vals[i])))) for i in sing_vals.keys()]+[0]*(max_consistent-len(sing_vals))) 
+    
+    print(ker)
+    # betti[0] = dim kernel d[0] - dim image d[1] = dim kernel d[0] - (dim space [1] - dim ker d[1])
+    
+    betti += ker[:-1]
+
+    betti -= lengths[1:] - ker[1:]
+    
+    return betti.tolist()
 
 @profile
 def homology_from_laplacian(complex, max_k=10, sparse=True):
