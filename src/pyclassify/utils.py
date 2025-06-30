@@ -325,7 +325,7 @@ def Vietoris_Rips_complex(points, epsilon, max_complex_dimension=2):
     return simplices
 
 @profile
-def pair_reduction(E, B, i, a, b):
+def pair_reduction(E, B, i, index_a, index_b):
     """
     Parameters:
         E: dict; the collection of all the complexes (which are lists)
@@ -337,15 +337,15 @@ def pair_reduction(E, B, i, a, b):
         B: dict; reduced collection of boundary matrices, done in place
     """
     
-    assert i+1 == len(b), f"The dimension of the generator b {b} should be equal to i+1 {i+1}"
+    #assert i+1 == len(b), f"The dimension of the generator b {b} should be equal to i+1 {i+1}"
     assert (i in E.keys()) and (i-1 in E.keys()) , f"There should be a complex indexed i {i} and {i-1}, instead we have {E.keys()}"
     assert ((i in B.keys()) and (i-1 in E.keys())) if i>1 else i in B.keys(), f"There should be a boundary matrix indexed i {i}, instead we have {B.keys()}"
-    assert (len(a)==len(b)-1) and (a!=[]), f'a {a} should be smaller than b {b} and not empty'
-    assert (b in E[i]) and (a in E[i-1]), f'a and b must be inside the complex lists'
+    #assert (len(a)==len(b)-1) and (a!=[]), f'a {a} should be smaller than b {b} and not empty'
+    #assert (b in E[i]) and (a in E[i-1]), f'a and b must be inside the complex lists'
 
-    ####print('Removing', a, b)
-    index_a = E[i-1].index(a)
-    index_b = E[i].index(b)
+    #####print('Removing', a, b)
+    #index_a = E[i-1].index(a)
+    #index_b = E[i].index(b)
 
     if i+1 in E.keys():
         mask = np.ones(B[i+1].shape[0], dtype=bool)
@@ -357,11 +357,11 @@ def pair_reduction(E, B, i, a, b):
     columns_to_change = B[i][index_a].nonzero()[1]
     rows_to_change = B[i][:,index_b].nonzero()[0]
     
-    print(rows_to_change, columns_to_change)
-    ####print('changing', rows_to_change, columns_to_change)
-    ####print(B[i][index_a],B[i][index_a].nonzero(), B[i][:,index_b], B[i][:,index_b].nonzero())
-    ####print(B[i].todense())
-    ####print(B[i-1].todense())
+    #print(rows_to_change, columns_to_change)
+    #####print('changing', rows_to_change, columns_to_change)
+    #####print(B[i][index_a],B[i][index_a].nonzero(), B[i][:,index_b], B[i][:,index_b].nonzero())
+    #####print(B[i].todense())
+    #####print(B[i-1].todense())
 
     ##grid = np.meshgrid(rows_to_change, columns_to_change)
 
@@ -369,7 +369,7 @@ def pair_reduction(E, B, i, a, b):
     row_ = B[i][index_a, :]
     col_ = B[i][:, index_b]
 
-    print('***********---------------', row_.shape, col_.shape)
+    #print('***********---------------', row_.shape, col_.shape)
 
     ##B[i][grid[0].T,grid[1].T] -= bdba * B[i][index_a*np.ones(grid[1].T.shape), grid[1].T] * B[i][grid[0].T, index_b*np.ones(grid[1].T.shape)]
     #M = B[i][rows_to_change,columns_to_change.T].toarray()
@@ -381,10 +381,10 @@ def pair_reduction(E, B, i, a, b):
     # Update elements individually due to sparse matrix indexing limitations
     for row in rows_to_change:
         for col in columns_to_change:
-            print('before:      ', row, col, '---', B[i][row, col])
-            print('#',bdba, B[i][index_a, col], B[i][row, index_b])
+            #print('before:      ', row, col, '---', B[i][row, col])
+            #print('#',bdba, B[i][index_a, col], B[i][row, index_b])
             B[i][row, col] -= bdba * row_[0, col] * col_[row, 0]
-            print('After:         ',B[i][row,col])
+            #print('After:         ',B[i][row,col])
 
     E[i].pop(index_b)
     E[i-1].pop(index_a)
@@ -397,9 +397,7 @@ def pair_reduction(E, B, i, a, b):
         B[i-1] = B[i-1][:,mask]
     B[i] = B[i][mask]
 
-    ####print(B[i].todense())
-
-    ###assert False
+    #####print(B[i].todense())
     return E, B
 
 @profile
@@ -423,16 +421,16 @@ def reduce_chain(E,B, maxiter=1e4):
             found = False
             for key in B[i].keys():        
                 if abs(B[i][key])==1:
-                    print(key) 
+                    #print(key) 
                     found = True
-                    E, B = pair_reduction(E, B, i, E[i-1][key[0]], E[i][key[1]])
+                    E, B = pair_reduction(E, B, i, key[0], key[1])
                     break
             iter += 1
-        print(iter, 'stopped at', B[i].todense())
+        #print(iter, 'stopped at', B[i].todense())
     return E, B
 
-@profile #!#better to change name
-def reduced_homology(complex, max_k=10, max_consistent=None, maxiter=1e4):
+@profile 
+def homology_from_reduction(complex, max_k=10, max_consistent=None, maxiter=1e4):
     """
     Given a complex, it returns the number of zero eigenvalues (at most max_k are computed).
 
@@ -476,7 +474,7 @@ def reduced_homology(complex, max_k=10, max_consistent=None, maxiter=1e4):
 
     sing_vals = {}
     for i in B.keys():
-        print(i, B[i].shape)
+        #print(i, B[i].shape)
         if B[i].shape[0] == 0:
             sing_vals[i] = np.zeros(B[i].shape[1])
         elif B[i].shape[1] == 0:
@@ -488,20 +486,20 @@ def reduced_homology(complex, max_k=10, max_consistent=None, maxiter=1e4):
             #else:
             #   sing_vals[i][:min(max_k,B[i].shape[0],B[i].shape[1])] = svds(B[i].asfptype(), return_singular_vectors=False, which='SM', k=min(max_k,B[i].shape[0],B[i].shape[1]), solver='propack')
             #sing_vals[i] = np.zeros(B[i].shape[1]-np.linalg.matrix_rank(B[i].todense()))
-            print(np.linalg.matrix_rank(B[i].todense()))
+            #print(np.linalg.matrix_rank(B[i].todense()))
            #!# removed max_k 
             sing_vals[i][:min(B[i].shape[0],B[i].shape[1])] = np.linalg.svd(B[i].todense(), compute_uv=False, full_matrices=False)
 
-    print('sing_vals',sing_vals)
-    print('c', complex)
+    #print('sing_vals',sing_vals)
+    #print('c', complex)
     lengths = np.array([len(complex[i]) for i in complex.keys()]+[0]*(max_consistent-len(list(complex.keys()))+1))
-    print(lengths)
+    #print(lengths)
     betti = np.zeros(max_consistent, dtype=int)
 
     # the dimension of the kernel of the maps, the first element is representing d_0, which is not computed
     ker = np.array([len(complex[0])]+[np.count_nonzero(np.isclose(sing_vals[i],np.zeros(len(sing_vals[i])))) for i in sing_vals.keys()]+[0]*(max_consistent-len(sing_vals))) 
     
-    print(ker)
+    #print(ker)
     # betti[0] = dim kernel d[0] - dim image d[1] = dim kernel d[0] - (dim space [1] - dim ker d[1])
     
     betti += ker[:-1]
