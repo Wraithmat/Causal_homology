@@ -4,7 +4,7 @@ from scipy.sparse import dok_matrix
 from scipy.sparse.linalg import eigsh, svds
 from scipy.linalg import eigh
 from line_profiler import profile
-from scipy.sparse import hstack
+from joblib import Parallel, delayed
 
 """
 We compute the homology group in different steps:
@@ -25,6 +25,73 @@ We test the algorithm in optimal theoretical setups and check:
     2. all for different kind of shapes (e.g. two disconnected rings, Bolza surface, torus)
     (possibly we could compute an estimate of the reach number and check if numerically it is possible to use this information to understand if we are in proper regime)
 """
+
+def slice_dok_0(mat, row_indices, col_indices):
+    """Slice a dok_matrix and return another dok_matrix."""
+    result = dok_matrix((len(row_indices), len(col_indices)), dtype=mat.dtype)
+    
+    row_map = {i: idx for idx, i in enumerate(row_indices)}
+    col_map = {j: idx for idx, j in enumerate(col_indices)}
+    
+    for (i, j), val in mat.items():
+        if i in row_map and j in col_map:
+            result[row_map[i], col_map[j]] = val
+    
+    return result
+
+def slice_dok(dok, row_indices, col_indices):
+    """
+    Slice a dok_matrix by selecting specified rows and columns.
+    This version uses CSR and CSC for efficiency.
+    
+    Parameters:
+        dok (dok_matrix): Input sparse matrix.
+        row_indices (array-like): List or array of row indices to keep.
+        col_indices (array-like): List or array of column indices to keep.
+        
+    Returns:
+        dok_matrix: Sliced result as DOK matrix.
+    """
+    csr = dok.tocsr()
+
+    sliced_csr = csr[row_indices, :]
+
+    csc = sliced_csr.tocsc()
+
+    sliced_csc = csc[:, col_indices]
+
+    result = sliced_csc.todok()
+
+    return result
+
+def slice_dok_columns_0(mat, col_indices):
+    """Slice only columns of a dok_matrix and return a new dok_matrix."""
+    n_rows = mat.shape[0]
+    result = dok_matrix((n_rows, len(col_indices)), dtype=mat.dtype)
+    
+    col_map = {j: new_j for new_j, j in enumerate(col_indices)}
+    
+    for (i, j), val in mat.items():
+        if j in col_map:
+            result[i, col_map[j]] = val
+    
+    return result
+
+def slice_dok_columns(dok, keep_cols):
+    """Remove specified columns from a dok_matrix using CSC format."""
+    csc = dok.tocsc()
+    
+    sliced_csc = csc[:, keep_cols]
+
+    return sliced_csc.todok()
+
+def slice_dok_rows(dok, keep_rows):
+    """Remove specified rows from a dok_matrix using CSR format."""
+    csr = dok.tocsr()
+    
+    sliced_csr = csr[keep_rows, :]
+
+    return sliced_csr.todok()
 
 @profile
 def _project_affine_space(p, points, eps=1e-9):
@@ -52,10 +119,15 @@ def _project_affine_space(p, points, eps=1e-9):
         y = y[:A.shape[1]]
         coeff = np.linalg.solve(R, y)
 
-        check = max(np.abs(A@coeff-p+points[0]))<eps
+        matrix = A @ coeff +points[0]
+        check = max(np.abs(matrix-p))<eps
         # Oss: if A@cc==c-points[T[0]] then the center was already on the affine space
         # the coefficients are given by cc[i] for all elements of T[i+1], T[0] coefficient is 1-sum(cc)x
-        return (A@coeff+points[0]).reshape(-1), [1-np.sum(coeff)]+coeff.tolist(), check
+        
+        sum_coeff = np.sum(coeff)
+        coeff_list = coeff.tolist()
+        return matrix.ravel(), [1 - sum_coeff] + coeff_list, check
+        #return (matrix).reshape(-1), [1-np.sum(coeff)]+coeff.tolist(), check
     
 @profile
 def _walking_step(points, c, cc, T, eps=0):
@@ -63,15 +135,21 @@ def _walking_step(points, c, cc, T, eps=0):
     This function is used to find the correct displacement of the center of the ball
     """
 
+    v = cc-c
+
     tmax = 1
     i_star = -1
     for i in range(len(points)):
         if i in T:
             continue
-        if np.dot(points[i]-c,cc-c) >= np.dot(cc-c,cc-c):
+        if np.dot(points[i]-c,v) >= np.dot(v,v):
             continue # p is always inside the ball
-        den = np.sum(2*(points[i]*(c-cc))) - np.sum(2*(points[T[0]]*(c-cc)))
-        num = np.sum((points[T[0]]-c)**2) - np.sum((points[i]-c)**2)
+        #den = np.sum(-2*(points[i]*v)) - np.sum(-2*(points[T[0]]*v))
+        den = -2 * np.dot(points[i] - points[T[0]], v)
+        displ_0 = points[T[0]]-c
+        displ_1 = points[i]-c
+        #num = np.sum((points[T[0]]-c)**2) - np.sum((points[i]-c)**2)
+        num = np.dot(displ_0,displ_0) - np.dot(displ_1, displ_1)
         t = num/den if den!=0 else 0 #If the denominator is 0, then there is a point that is already on the border that was not considered
         if t>0 and t < tmax+eps:
             tmax = t
@@ -132,10 +210,11 @@ def fast_smallest_ball(points, distances=None, maxiter=1000, return_radius=True)
         cc, coeff, check = _project_affine_space(c, points[T])
         if check:
             if np.all(np.array(coeff) >= 0):
-                if np.any(np.array(coeff) > 0.5+1e-3): # we add a small epsilon to avoid machine resolution errors
-                    raise ValueError("Lemma 2 (Fischer et al.) is not satisfied")
-                else:
-                    return np.sum((c-points[T[0]])**2)**0.5 if return_radius else (c,T)
+                #if np.any(np.array(coeff) > 0.5+1e-3): # we add a small epsilon to avoid machine resolution errors
+                #    raise ValueError("Lemma 2 (Fischer et al.) is not satisfied")
+                #else:
+                    return np.linalg.norm(c - points[T[0]]) if  return_radius else (c,T)
+                    #return np.sum((c-points[T[0]])**2)**0.5 if return_radius else (c,T)
             T.pop(np.argmin(coeff))
         else:
             tmax, i_star = _walking_step(points, c, cc, T)
@@ -273,7 +352,8 @@ def collapsed_Cech_complex(points, epsilon, max_complex_dimension=2):
             for connected_node in np.nonzero(two_epsilon_matrix[complex[0]])[0]:
                 simplex = list(np.sort(list(complex) + [connected_node]))
                 boundary = [simplex[:k]+simplex[k+1:] for k in range(i+1)]   
-                if np.sum([boundary[j] in simplices[i-1] for j in range(i+1)]) == i+1:
+                #if np.sum([boundary[j] in simplices[i-1] for j in range(i+1)]) == i+1:
+                if all(boundary[j] in simplices[i-1] for j in range(i+1)):
                     # If the complex with the new node has all the boundaries, then we check if it is a Cech simplex
                     r = fast_smallest_ball(points[simplex])
                     if r<epsilon:
@@ -350,7 +430,9 @@ def pair_reduction(E, B, i, index_a, index_b):
     if i+1 in E.keys():
         mask = np.ones(B[i+1].shape[0], dtype=bool)
         mask[index_b] = 0
-        B[i+1]=B[i+1][mask]
+        keep_rows = np.flatnonzero(mask)
+        B[i+1] = slice_dok_rows(B[i+1], keep_rows)
+        #B[i+1]=B[i+1][mask]
 
     #columns_to_change = B[i][index_a].nonzero()[0].reshape(1,-1)
     #rows_to_change = B[i][:,index_b].nonzero()[0].reshape(1,-1)
@@ -388,14 +470,27 @@ def pair_reduction(E, B, i, index_a, index_b):
 
     E[i].pop(index_b)
     E[i-1].pop(index_a)
+
+
     mask = np.ones(B[i].shape[1], dtype=bool)
     mask[index_b] = 0
-    B[i] = B[i][:,mask]
-    mask = np.ones(B[i].shape[0], dtype=bool)
-    mask[index_a] = 0
-    if i>1:
-        B[i-1] = B[i-1][:,mask]
-    B[i] = B[i][mask]
+    keep_cols = np.flatnonzero(mask)
+
+    mask_row = np.ones(B[i].shape[0], dtype=bool)
+    mask_row[index_a] = 0
+    keep_rows = np.flatnonzero(mask_row)
+
+    B[i] = slice_dok(B[i], keep_rows, keep_cols)
+
+    if i > 1:
+        B[i-1] = slice_dok_columns(B[i-1], keep_rows)
+
+    #B[i] = B[i][:,mask]
+    #mask = np.ones(B[i].shape[0], dtype=bool)
+    #mask[index_a] = 0
+    #if i>1:
+    #    B[i-1] = B[i-1][:,mask]
+    #B[i] = B[i][mask]
 
     #####print(B[i].todense())
     return E, B
@@ -508,6 +603,16 @@ def homology_from_reduction(complex, max_k=10, max_consistent=None, maxiter=1e4)
     
     return betti.tolist()
 
+def parallel_digonalization(deltas, i, max_k=10, sparse=False,):
+    
+    if deltas[i].shape[0] == 1:
+        return np.array([deltas[i][0,0]])
+    else:
+        if sparse:
+            return eigsh(deltas[i], k=min(max_k,deltas[i].shape[0]-1), which='SM', return_eigenvectors=False)
+        else:
+            return  eigh(deltas[i], eigvals_only=True, subset_by_index=[0, min(max_k,deltas[i].shape[0]-1)])
+
 @profile
 def homology_from_laplacian(complex, max_k=10, sparse=True):
     """
@@ -550,14 +655,20 @@ def homology_from_laplacian(complex, max_k=10, sparse=True):
         deltas[i]+=B.T@B
 
     eig = {i:[] for i in range(len(deltas)-1)}
+
+    parallel_res = Parallel(n_jobs=-1, prefer='threads')(
+        delayed(parallel_digonalization)(deltas, i, max_k, sparse) for i in range(len(deltas))
+    )
     for i in range(len(deltas)):
-        if deltas[i].shape[0] == 1:
-            eig[i] = np.array([deltas[i][0,0]])
-        else:
-            if sparse:
-                eig[i] = eigsh(deltas[i], k=min(max_k,deltas[i].shape[0]-1), which='SM', return_eigenvectors=False)
-            else:
-                eig[i] = eigh(deltas[i], eigvals_only=True, subset_by_index=[0, min(max_k,deltas[i].shape[0]-1)])
+        eig[i] = parallel_res[i]
+    #for i in range(len(deltas)):
+    #    if deltas[i].shape[0] == 1:
+    #        eig[i] = np.array([deltas[i][0,0]])
+    #    else:
+    #        if sparse:
+    #            eig[i] = eigsh(deltas[i], k=min(max_k,deltas[i].shape[0]-1), which='SM', return_eigenvectors=False)
+    #        else:
+    #            eig[i] = eigh(deltas[i], eigvals_only=True, subset_by_index=[0, min(max_k,deltas[i].shape[0]-1)])
     for i in range(len(deltas), max_consistent):
         eig[i]=eig[i] = np.array([])
     return [np.count_nonzero([np.isclose(eig[i][j],0) for j in range(len(eig[i]))]) for i in range(len(eig))]
