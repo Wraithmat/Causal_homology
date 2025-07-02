@@ -5,6 +5,7 @@ from scipy.sparse.linalg import eigsh, svds
 from scipy.linalg import eigh
 from line_profiler import profile
 from joblib import Parallel, delayed
+import copy
 
 """
 We compute the homology group in different steps:
@@ -374,6 +375,89 @@ def collapsed_Cech_complex(points, epsilon, max_complex_dimension=2):
     return simplices
 
 @profile
+def collapsed_Cech_complex_with_sets(points, epsilon, max_complex_dimension=2):
+    """
+    Given a set of point and a radius epsilon, it builds the Cech complex while using the elementary simplicial collapse method to reduce it.
+    Notice that this is not necessarily the minimal Cech complex that can be obtained by elementary collapse.
+    
+    Parameters:
+        points: array-like; an NxD array with the position of the datapoints
+        epsilon: float; the radius of the balls used to build the complex
+    Returns:
+        simplices: dict; a dictionary containing the collapsed simplices of the Cech complex
+    """
+    assert epsilon>0, "Epsilon should be a positive number"
+    assert max_complex_dimension >= 0, "Max complex dimension should be a non-negative integer"
+    assert len(points.shape) == 2, "Points should be a 2D array of shape (N,D)"
+    assert points.shape[0] > 0, "Points should not be empty"
+
+    
+    simplices = {0:set(tuple([i]) for i in range(len(points)))}
+
+
+    two_epsilon_matrix = distance_matrix(points, points) + 3*epsilon*np.diag(np.ones(len(points)))
+    two_epsilon_matrix = two_epsilon_matrix < 2*epsilon
+
+    #row_links = lambda matrix: [np.nonzero(i) for i in matrix]
+
+    #links = row_links(two_epsilon_matrix) #notice: in this version you can not use the upper triangular part only, you need to check the total number of links per row
+
+    simplices[1]=set([])
+    for i in range(len(points)):
+
+        # Version that does not compute the whole matrix of distances: notice, it compute twice all the distances
+        #links = distance_matrix(points[i].reshape([1,-1]), points)
+        #links[i]+=3*epsilon
+        #links = np.nonzero(links[0] < 2*epsilon)[0] ## maybe specify that you focus on last part of the array
+        
+        links = np.nonzero(two_epsilon_matrix[i])
+
+        if len(links[0])==1:
+            if tuple(links[0]) in simplices[0]:
+                two_epsilon_matrix[i] = 0
+                two_epsilon_matrix[:,i] = 0
+                simplices[0].remove(tuple([i]))
+            if (tuple(links[0]), i) in simplices[1]:
+                simplices[1].remove((tuple(links[0]), i))
+        elif len(links[0])>1:
+            for j in links[0]:
+                if j>i:
+                    simplices[1].add(tuple([i,j]))
+    if simplices[1]==[]:
+        for j in range(1, max_complex_dimension + 1):
+            simplices[j] = set([])
+        return simplices
+    
+    for i in range(2,max_complex_dimension+1):
+        simplices[i]=set([])
+        for complex in copy.copy(simplices[i-1]):
+            # Check that there exist a point which is within 2-epsilon neighbourhoof of all points in the complex analysed
+            # take a pivotal node and check if any of its neighbours is connected to all the others
+            Cech = set()
+            for connected_node in np.nonzero(two_epsilon_matrix[complex[0]])[0]:
+                simplex = list(sorted(list(complex) + [connected_node]))
+                if all(tuple(simplex[:k] + simplex[k+1:]) in simplices[i-1] for k in range(i+1)):
+                    # If the complex with the new node has all the boundaries, then we check if it is a Cech simplex
+                    r = fast_smallest_ball(points[simplex])
+                    if r<epsilon:
+                        Cech.add(tuple(simplex))
+            if len(Cech)==1:
+                simplices[i-1].remove(complex)
+                for el in Cech:
+                    if el in simplices[i]: 
+                        simplices[i].remove(el)
+            elif len(Cech)>1:
+                for new_complex in Cech:
+                    if new_complex not in simplices[i]:
+                        simplices[i].add(new_complex)
+        if simplices[i]==[]:
+            for j in range(i, max_complex_dimension + 1):
+                simplices[j] = set([])
+            return {list(simplices[i]) for i in simplices}
+            
+    return {i:list(simplices[i]) for i in simplices}
+
+@profile
 def Vietoris_Rips_complex(points, epsilon, max_complex_dimension=2):
     """
     Given a set of point and a radius epsilon, it builds the Vietoris Rips complex up to order max_complex_dimension.
@@ -436,9 +520,6 @@ def pair_reduction(E, B, i, index_a, index_b):
 
     #columns_to_change = B[i][index_a].nonzero()[0].reshape(1,-1)
     #rows_to_change = B[i][:,index_b].nonzero()[0].reshape(1,-1)
-    columns_to_change = B[i][index_a].nonzero()[1]
-    rows_to_change = B[i][:,index_b].nonzero()[0]
-    
     #print(rows_to_change, columns_to_change)
     #####print('changing', rows_to_change, columns_to_change)
     #####print(B[i][index_a],B[i][index_a].nonzero(), B[i][:,index_b], B[i][:,index_b].nonzero())
@@ -450,6 +531,9 @@ def pair_reduction(E, B, i, index_a, index_b):
     bdba = B[i][index_a,index_b]
     row_ = B[i][index_a, :]
     col_ = B[i][:, index_b]
+    columns_to_change = row_.nonzero()[1]
+    rows_to_change = col_.nonzero()[0]
+    
 
     #print('***********---------------', row_.shape, col_.shape)
 
