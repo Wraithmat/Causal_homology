@@ -28,6 +28,28 @@ This repository implements a pipeline to estimate Betti numbers by constructing 
 - An heuristic method that should reduce the number of complexes is built, performances on a dataset of 100 random points on a 2d dimensional square are presented.
 ![Scaling analysis](experiments/simplices_and_times.png)
 
+## Usage example
+
+<pre> ```python 
+import numpy as np
+from pyclassify.utils import Cech_complex, homology_from_laplacian, homology_from_reduction, collapsed_Cech_complex_with_sets, alpha_complex
+# Sample point cloud
+points = np.random.uniform(0,1,(n,2))
+r = 0.09 #fixes number of samples
+# Compute the Cech complex
+Cech=Cech_complex(points, r, 3)
+# Compute the Cech complex while performing elementary reduction scheme efficiently
+Collapsed_Cech=collapsed_Cech_complex_with_sets(points, r, 3)
+# Compute the alpha-complex
+Alpha=alpha_complex(points, r, 3)
+# In this example we use the alpha complex, notice that they are all equivalent
+C=Alpha
+# Compute the betti numbers from the Laplacian matrix
+Betti = homology_from_laplacian(C, max_k=100, sparse=False)  
+# Compute the betti numbers with the reduction scheme (optimal for big datasets)
+Betti_2 = homology_from_reduction(C, max_consistent=3, maxiter=100) 
+ ``` </pre>
+
 ## References
 
     [1] Nyogi, P., Smale, S., & Weinberger, S. (2008). Finding the homology of submanifolds with high confidence from random samples. Discrete & Computational Geometry, 39(1–3), 419–441.
