@@ -30,8 +30,7 @@ This repository implements a pipeline to estimate Betti numbers by constructing 
 
 ## Usage example
 
-<pre> ```python 
-import numpy as np
+``` import numpy as np
 from pyclassify.utils import Cech_complex, homology_from_laplacian, homology_from_reduction, collapsed_Cech_complex_with_sets, alpha_complex
 # Sample point cloud
 points = np.random.uniform(0,1,(n,2))
@@ -48,7 +47,7 @@ C=Alpha
 Betti = homology_from_laplacian(C, max_k=100, sparse=False)  
 # Compute the betti numbers with the reduction scheme (optimal for big datasets)
 Betti_2 = homology_from_reduction(C, max_consistent=3, maxiter=100) 
- ``` </pre>
+ ```
 
 ## References
 
