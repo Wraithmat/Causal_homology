@@ -1,4 +1,5 @@
-from pyclassify.utils import fast_smallest_ball, Cech_complex
+from pyclassify.utils import fast_smallest_ball, Cech_complex, homology_from_laplacian, homology_from_reduction
+import copy
 import numpy as np
 from scipy.special import binom
 import pytest
@@ -24,5 +25,23 @@ def test_fast_smallest_ball():
     assert np.allclose([binom(15,i+1) for i in range(4)],[len(C[i]) for i in range(4)])
 
     
-# You can check that the the matrix laplacian has only 0,1,-1 entries (off diagonal?)
+def test_cech_complex():
+    # Test empty input or one dimensional one
+    with pytest.raises(AssertionError):
+        Cech_complex(np.array([[]]), 1, 2)
+        Cech_complex(np.array([1,2,3]), 1, 2)
+
+    # Test with a simple case
+    points = np.array([[0,0],[1,1],[0,1],[1,1]])
+    C = Cech_complex(points, 1.5, 2)
+    assert len(C[0]) == 4  # All points are in the first complex
+    assert len(C[1]) == 6  # All pairs of points are in the second complex
+
+def test_homology():
+    C={0:[[0],[1],[2],[3],[4],[5],[6],[7],[8]], 1:[[0,8],[0,1],[1,2],[0,4],[0,3],[0,2],[1,4],[1,5],[1,6],[1,7],[0,6],[2,5],[2,6],[2,7],[2,8],[3,4],[3,5],[3,6],[3,7],[3,8],[4,5],[4,7],[4,8],[5,6],[5,8],[6,7],[7,8]],2:[[0,1,4],[0,1,6],[1,2,5],[1,2,7],[0,2,6],[0,2,8],[1,6,7],[2,7,8],[0,3,8],[0,3,4],[1,4,5],[2,5,6],[3,4,7],[4,5,8],[3,5,6],[3,5,8],[4,7,8],[3,6,7]]}
+    Op=homology_from_laplacian(C, max_k=25, sparse=False)
+    C_p= copy.deepcopy(C)
+    O_r=homology_from_reduction(C_p)
+    assert Op == [1,1,0]
+    assert O_r == [1,1]
 

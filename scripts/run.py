@@ -10,4 +10,4 @@ if __name__=='__main__':
     C=collapsed_Cech_complex(points, 0.09, 3)
     collapsed_Cech_complex_with_sets(points, 0.09, 3)
     homology_from_laplacian(C, max_k=100, sparse=False)  
-    homology_from_reduction(C, max_k=100, max_consistent=3)
+    homology_from_reduction(C, max_consistent=3, maxiter=100)

@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.spatial import distance_matrix
+from scipy.spatial import distance_matrix, Delaunay
 from scipy.sparse import dok_matrix
 from scipy.sparse.linalg import eigsh, svds
 from scipy.linalg import eigh
@@ -93,6 +93,15 @@ def slice_dok_rows(dok, keep_rows):
     sliced_csr = csr[keep_rows, :]
 
     return sliced_csr.todok()
+
+def heuristic_ordering(points):
+    """In order to optimize the number of elementary collapses, we can use an heuristic rule: we order the points by the distance from the center of mass"""
+
+    center = np.mean(points, axis=0)
+    distances = distance_matrix(center.reshape(1,-1), points)[0]
+    order = np.argsort(-distances)
+
+    return points[order]
 
 @profile
 def _project_affine_space(p, points, eps=1e-9):
@@ -240,7 +249,7 @@ def _Vietoris_Rips_complex(points, two_epsilon_matrix, simplices=None):
     
     new_simplices = []
     for complex in simplices:
-        # Check that there exist a point which is within 2-epsilon neighbourhoof of all points in the complex analysed
+        # Check that there exist a point which is within 2-epsilon neighbourhood of all points in the complex analysed
         # take a pivotal node and check if any of its neighbours is connected to all the others
         for connected_node in np.nonzero(two_epsilon_matrix[complex[0]])[0]:            
             if np.sum(two_epsilon_matrix[connected_node, complex]) == len(complex):
@@ -329,10 +338,9 @@ def collapsed_Cech_complex(points, epsilon, max_complex_dimension=2):
         links = np.nonzero(two_epsilon_matrix[i])
 
         if len(links[0])==1:
-            if links[0] in simplices[0]:
-                two_epsilon_matrix[i] = 0
-                two_epsilon_matrix[:,i] = 0
-                simplices[0].remove([i])
+            two_epsilon_matrix[i] = 0
+            two_epsilon_matrix[:,i] = 0
+            simplices[0].remove([i])
             if [links[0], i] in simplices[1]:
                 simplices[1].remove([links[0], i])
         elif len(links[0])>1:
@@ -347,7 +355,7 @@ def collapsed_Cech_complex(points, epsilon, max_complex_dimension=2):
     for i in range(2,max_complex_dimension+1):
         simplices[i]=[]
         for complex in np.copy(simplices[i-1]):
-            # Check that there exist a point which is within 2-epsilon neighbourhoof of all points in the complex analysed
+            # Check that there exist a point which is within 2-epsilon neighbourhood of all points in the complex analysed
             # take a pivotal node and check if any of its neighbours is connected to all the others
             Cech = []
             for connected_node in np.nonzero(two_epsilon_matrix[complex[0]])[0]:
@@ -413,12 +421,11 @@ def collapsed_Cech_complex_with_sets(points, epsilon, max_complex_dimension=2):
         links = np.nonzero(two_epsilon_matrix[i])
 
         if len(links[0])==1:
-            if tuple(links[0]) in simplices[0]:
-                two_epsilon_matrix[i] = 0
-                two_epsilon_matrix[:,i] = 0
-                simplices[0].remove(tuple([i]))
-            if (tuple(links[0]), i) in simplices[1]:
-                simplices[1].remove((tuple(links[0]), i))
+            two_epsilon_matrix[i] = 0
+            two_epsilon_matrix[:,i] = 0
+            simplices[0].remove(tuple([i]))
+            if tuple(list(links[0])+[i]) in simplices[1]:
+                simplices[1].remove(tuple(list(links[0])+[i]))
         elif len(links[0])>1:
             for j in links[0]:
                 if j>i:
@@ -431,7 +438,7 @@ def collapsed_Cech_complex_with_sets(points, epsilon, max_complex_dimension=2):
     for i in range(2,max_complex_dimension+1):
         simplices[i]=set([])
         for complex in copy.copy(simplices[i-1]):
-            # Check that there exist a point which is within 2-epsilon neighbourhoof of all points in the complex analysed
+            # Check that there exist a point which is within 2-epsilon neighbourhood of all points in the complex analysed
             # take a pivotal node and check if any of its neighbours is connected to all the others
             Cech = set()
             for connected_node in np.nonzero(two_epsilon_matrix[complex[0]])[0]:
@@ -441,6 +448,87 @@ def collapsed_Cech_complex_with_sets(points, epsilon, max_complex_dimension=2):
                     r = fast_smallest_ball(points[simplex])
                     if r<epsilon:
                         Cech.add(tuple(simplex))
+            if len(Cech)==1:
+                simplices[i-1].remove(complex)
+                for el in Cech:
+                    if el in simplices[i]: 
+                        simplices[i].remove(el)
+            elif len(Cech)>1:
+                for new_complex in Cech:
+                    if new_complex not in simplices[i]:
+                        simplices[i].add(new_complex)
+        if simplices[i]==[]:
+            for j in range(i, max_complex_dimension + 1):
+                simplices[j] = set([])
+            return {list(simplices[i]) for i in simplices}
+            
+    return {i:list(simplices[i]) for i in simplices}
+
+@profile
+def alpha_complex(points, epsilon, max_complex_dimension=2):
+    """
+    By computing the intersection between a Cech complex and a Delaunay triangulation, it is possible to build a complex which contains a number of simplices linear in the number of points.
+    Parameters:
+        points: array-like; an NxD array with the position of the datapoints
+        epsilon: float; the radius of the balls used to build the complex
+    Returns:
+        simplices: dict; a dictionary containing the collapsed simplices of the Cech complex
+    """
+    assert epsilon>0, "Epsilon should be a positive number"
+    assert max_complex_dimension >= 0, "Max complex dimension should be a non-negative integer"
+    assert len(points.shape) == 2, "Points should be a 2D array of shape (N,D)"
+    assert points.shape[0] > 0, "Points should not be empty"
+
+    delaunay_triangulation = Delaunay(points)
+    index_del, neigh_del = delaunay_triangulation.vertex_neighbor_vertices
+
+    max_complex_dimension = min(max_complex_dimension, points.shape[1]+1)
+
+    simplices = {0:set(tuple([i]) for i in range(len(points)))}
+
+    two_epsilon_matrix = distance_matrix(points, points) + 3*epsilon*np.diag(np.ones(len(points)))
+    two_epsilon_matrix = two_epsilon_matrix < 2*epsilon
+
+    simplices[1]=set([])
+    for i in range(len(points)):   
+        cech_links = np.nonzero(two_epsilon_matrix[i])
+        delaunay_links = neigh_del[index_del[i]:index_del[i+1]]
+        links=np.intersect1d(cech_links[0], delaunay_links, assume_unique=True)
+        mask = np.zeros(len(points), dtype=bool)
+        mask[links] = True
+        two_epsilon_matrix[i] = mask
+        two_epsilon_matrix[:,i] = mask
+        if len(links)==1:
+            two_epsilon_matrix[i] = 0
+            two_epsilon_matrix[:,i] = 0
+            simplices[0].remove(tuple([i]))
+            if tuple([links[0], i]) in simplices[1]:
+                simplices[1].remove(tuple([links[0], i]))
+        elif len(links)>1:
+            for j in links:
+                if j>i:
+                    simplices[1].add(tuple([i,j]))
+    if simplices[1]==[]:
+        for j in range(1, max_complex_dimension + 1):
+            simplices[j] = set([])
+        return simplices
+    
+    for i in range(2,max_complex_dimension+1):
+        simplices[i]=set([])
+        for complex in copy.copy(simplices[i-1]):
+            # Check that there exist a point which is within 2-epsilon neighbourhood of all points in the complex analysed
+            # take a pivotal node and check if any of its neighbours is connected to all the others
+            Cech = set()
+            for connected_node in np.nonzero(two_epsilon_matrix[complex[0]])[0]:
+                simplex = list(sorted(list(complex) + [connected_node]))
+                if all(tuple(simplex[:k] + simplex[k+1:]) in simplices[i-1] for k in range(i+1)):
+                    # If the complex with the new node has all the boundaries,
+                    if any(all(el in del_simplex for el in simplex) for del_simplex in delaunay_triangulation.simplices):
+                        # we check if it is a possible Delaunay simplex 
+                        # then we check if it is a Cech simplex
+                        r = fast_smallest_ball(points[simplex])
+                        if r<epsilon:
+                            Cech.add(tuple(simplex))
             if len(Cech)==1:
                 simplices[i-1].remove(complex)
                 for el in Cech:
@@ -608,8 +696,26 @@ def reduce_chain(E,B, maxiter=1e4):
         #print(iter, 'stopped at', B[i].todense())
     return E, B
 
+def parallel_ker(B):
+    if B.shape[0] == 0:
+        sing_vals = np.zeros(B.shape[1])
+    elif B.shape[1] == 0:
+        sing_vals = np.ones(1)
+    else:
+        sing_vals = np.zeros(B.shape[1])
+        #if B[i].shape[0]>B[i].shape[1]:
+        #   sing_vals[i][:min(max_k,B[i].shape[0],B[i].shape[1])] = svds(hstack([B[i].asfptype(), np.zeros([B[i].shape[0],1])]), return_singular_vectors=False, which='SM', k=min(max_k,B[i].shape[0],B[i].shape[1]), solver='propack')
+        #else:
+        #   sing_vals[i][:min(max_k,B[i].shape[0],B[i].shape[1])] = svds(B[i].asfptype(), return_singular_vectors=False, which='SM', k=min(max_k,B[i].shape[0],B[i].shape[1]), solver='propack')
+        #sing_vals[i] = np.zeros(B[i].shape[1]-np.linalg.matrix_rank(B[i].todense()))
+        #print(np.linalg.matrix_rank(B[i].todense()))
+       #!# removed max_k 
+        sing_vals[:min(B.shape[0],B.shape[1])] = np.linalg.svd(B.todense(), compute_uv=False, full_matrices=False)
+    return sing_vals
+
+
 @profile 
-def homology_from_reduction(complex, max_k=10, max_consistent=None, maxiter=1e4):
+def homology_from_reduction(complex, max_consistent=None, maxiter=1e4):
     """
     Given a complex, it returns the number of zero eigenvalues (at most max_k are computed).
 
@@ -652,6 +758,12 @@ def homology_from_reduction(complex, max_k=10, max_consistent=None, maxiter=1e4)
         return [len(complex[0])]+[0]*(max_consistent-1)
 
     sing_vals = {}
+    
+    #res_ker = Parallel(n_jobs=-1)(delayed(parallel_ker)(B[i]) for i in B.keys())
+    
+    #for i in range(len(res_ker)):
+    #    sing_vals[i] = res_ker[i]
+
     for i in B.keys():
         #print(i, B[i].shape)
         if B[i].shape[0] == 0:
