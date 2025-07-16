@@ -6,6 +6,10 @@ from scipy.linalg import eigh
 from line_profiler import profile
 from joblib import Parallel, delayed
 import copy
+from scipy.stats import gaussian_kde
+from scipy.signal import find_peaks
+from sklearn.cluster import AgglomerativeClustering #################!!!!!!!!! not yet in the requirements
+from scipy.stats import beta
 
 """
 We compute the homology group in different steps:
@@ -884,6 +888,185 @@ def persistent_homology(points, epsilon_values=None):
         homology = homology_from_laplacian(cech)
 
         # We need to keep track of the specific simplices to be able to assign to them a birth and death time
-
-    
     pass
+
+def radius_selection(points, local=False, ncluster=2):
+    """
+    Given the set of point we estimate the Bottleneck with en heuristic outlier detection method. The Bottleneck can be used to estimate the condition number.
+    
+    Parameters:
+        points: array-like; an NxD array with position of the datapoints
+        local: bool; if True, we estimate for each datapoint a maximal radius, otherwise the estimate is performed with the full histogram
+        ncluster: int; the number of clusters to be used in the local estimation, if local is True
+    Returns:
+        radius: array-like; if local is False it is a float, ptherwise an array of floats with the radius for each point
+    """
+
+    #### Notice: the agglomerative clustering procedure is very stupid, I am doing it in 1d, in the end I could just consider all the distances up to a value which make the optimal cluster
+
+    distances= distance_matrix(points, points)
+    delaunay = Delaunay(points)
+
+    indptr, indices = delaunay.vertex_neighbor_vertices
+
+    distances_hist = np.array([])
+    if not local:
+        for k in range(len(indptr)-1):
+            neigh=indices[indptr[k]:indptr[k+1]]
+            distances_hist=np.hstack((distances_hist, distances[k,neigh]))
+        kernel = gaussian_kde(distances_hist, bw_method='silverman')
+        c=kernel(np.linspace(0,max(distances_hist[1:]),100))
+        peaks, _ =find_peaks(c, prominence=0.1)
+        if len(peaks) == 0:
+            radius = np.mean(distances_hist)
+        elif len(peaks) == 1:
+            radius = np.linspace(0,max(distances_hist),100)[peaks[0]]
+        elif len(peaks) > 1:
+            radius = np.linspace(0,max(distances_hist),100)[peaks[1]]/2
+        return radius
+    else:
+        radius = np.zeros(len(points))
+        for k in range(len(indptr)-1):
+            neigh=indices[indptr[k]:indptr[k+1]]
+            point_ = distances[k,neigh]
+            clust = AgglomerativeClustering(n_clusters=ncluster).fit(point_.reshape(-1,1))
+            l_star = clust.labels_[np.argmin(distances[k,neigh])]
+            radius[k] = np.max(distances[k,neigh[clust.labels_==l_star]])/2
+        return radius
+
+def bayesian_multinomial_mode(prior, samples, points, size=10000):
+    """
+    We compute the probability of 'mode' to be the mode of a multinomial distribution. We consider a Dirichlet prior.
+    
+    Parameters:
+        prior: array; an array of the concentration parameters, it must be one item longer than 'points', the last item is the concentration of unseen points
+        samples: list; a list containing the samples from the multinomial distribution
+        points: list of tuples; a list of the already observed elements
+        size: int; number of samples for the Monte Carlo estimate
+    """
+
+    assert len(prior) == len(points) + 1
+    assert len(prior) >= 2
+
+    if len(prior)==2:
+        mode_samples = sum(1 for i in samples if i == points[0])
+        rest_samples = len(samples) - mode_samples
+
+        mode_prob = beta.cdf(0.5,prior[0]+mode_samples, prior[1]+rest_samples)
+
+        return [1-mode_prob, mode_prob]
+
+    else:
+        posterior = [sum(1 for j in samples if j == points[i]) for i in range(len(points))]
+        posterior.append(len(samples) - sum(posterior))
+        posterior = np.array(posterior) + prior
+
+        MC_samples = np.random.dirichlet(posterior, size=size)
+
+        maxs = np.argmax(MC_samples, axis=1)
+
+        probs = np.zeros(len(prior))
+        var = np.zeros(len(prior))
+
+        counts = np.unique(maxs, return_counts=True)
+        probs[counts[0]]+=counts[1]/size
+
+        var = 1/(size-1) * (probs*size*(1-probs)**2+(size-probs*size)*probs**2)
+
+        return probs, var
+
+def reach_estimation(points, NN=10, d=2, n_stochastic=0, method='harmonic_mean'):
+    """
+    We estimate the reach following Aamari et al. 2019. 
+    If we use the method of 'harmonic_mean', we consider the tangent space to be estimated multiple times using PCA on the nearest neighbours of each point. Then an estimator of the distance of the points from the tangent space is built and used to estimate the reach.
+    Otherwise we consider for each point n_stochastic estimations of the reach and take some statistic of it. 
+
+    Parameters:
+        points: array-like; an NXD array with the dataset
+        NN:int; the number of nearest neighbours to be considered to estimate the tangent plane (if n_stochastic>0, then There will be n_stochastic estimations each using int((NN+1)/n_stochastic) points)
+        n_stochastic: int; if greater than 1, we estimate the tangent plane n_stochastic times with int((NN+1)/n_stochastic) points
+        method: function or string; only considered if n_stochastic>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
+    """
+    
+    distances = distance_matrix(points, points)**2
+
+    reach=np.inf
+
+    if n_stochastic>1:
+        if method == 'harmonic_mean':
+            for i in range(len(points)):
+                Nearest_neigh=np.argsort(distances[i])
+                points_ = points-points[Nearest_neigh[0]]
+
+                random_selection = Nearest_neigh[:NN+1]
+                np.random.shuffle(random_selection)
+
+                norms = np.zeros((len(points), n_stochastic))
+                mask = np.zeros((len(points), n_stochastic))
+                mask[i] = np.inf
+                for j in range(n_stochastic):
+                    X = points_[random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)]]
+                    C=1/(int(NN+1/n_stochastic)-1)*X.T@X
+                    _, eigenvectors = np.linalg.eigh(C)
+                    projector = eigenvectors[:,:points.shape[1]-d]@eigenvectors[:,:points.shape[1]-d].T
+                    points__ = points_@projector # we project directly on the "mixture" of the tangent space 
+                    norms[:,j] = 2*np.sum(points__**2, axis=1)**0.5
+                    mask[random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)],j] = np.inf
+                norms = (norms+mask)**-1
+                
+                # We compute the mean of the reciprocals. This estimates the factor (1/2d(x-y,T_xM))
+                N_points = np.count_nonzero(norms, axis=1)
+                norms = np.sum(norms,axis=1)
+
+                m = np.ones(len(points), dtype=bool)
+                m[i] = False
+
+                reach=min(reach,min((distances[i,m] * norms[m] / N_points[m])))
+        else:
+            for i in range(len(points)):
+                Nearest_neigh=np.argsort(distances[i])
+                points_ = points-points[Nearest_neigh[0]]
+
+                random_selection = Nearest_neigh[:NN+1]
+                np.random.shuffle(random_selection)
+
+                mask = distances[i]!=0
+
+                reach_=[]
+                for j in range(n_stochastic):
+                    X = points_[random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)]]
+                    C=1/(int(NN+1/n_stochastic)-1)*X.T@X
+                    _, eigenvectors = np.linalg.eigh(C)
+                    projector = eigenvectors[:,:points.shape[1]-d]@eigenvectors[:,:points.shape[1]-d].T
+                    points__ = points_@projector # we project directly on the "mixture" of the tangent space 
+                    norms = 2*np.sum(points__**2, axis=1)**0.5
+                    mask2 = random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)]
+                    mask[mask2] = False
+                    reach_.append(min((distances[i, mask] / norms[mask])))
+                
+                reach=min(reach,method(reach_))
+                
+                
+                
+    # if n_stochastic is not greater than 1, we estimate the tangent space only once and limit the reach estimation to the points that were not used to estimate the tangent space
+    else:
+        for i in range(len(points)):
+            Nearest_neigh=np.argsort(distances[i])
+            X = points[Nearest_neigh[:NN+1]]
+            points_ = points-X[0]
+            X = X-X[0]
+            C=1/NN*X.T@X
+            _, eigenvectors = np.linalg.eigh(C)
+            points_ = points_-(points_@eigenvectors[:,-d:])@eigenvectors[:,-d:].T #we remove the part that is on the tangent space and leave the orthogonal one
+            norms = 2*np.sum(points_**2, axis=1)**0.5
+            #mask = distances[i]>0.02
+            #reach=min(reach,min((distances[i, mask] / norms[mask])))
+
+            # We estimate the reach only considering the datapoints that were not used to fit the tangent space
+            reach=min(reach,min((distances[i, Nearest_neigh[NN+1:]] / norms[Nearest_neigh[NN+1:]])))
+
+
+    return reach
+## Algorithm for reach estimation
+## Class for alpha complexes
+## Menaging multiple time lags    
