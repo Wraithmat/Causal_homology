@@ -1,5 +1,6 @@
 *.dat
 *.data
+curvature.py
 simplices_per_algorithm.py
 lightning_logs/
 scalability.py

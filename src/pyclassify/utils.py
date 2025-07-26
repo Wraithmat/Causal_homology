@@ -6,10 +6,12 @@ from scipy.linalg import eigh
 from line_profiler import profile
 from joblib import Parallel, delayed
 import copy
-from scipy.stats import gaussian_kde
+from scipy.stats import gaussian_kde, beta
 from scipy.signal import find_peaks
-from sklearn.cluster import AgglomerativeClustering #################!!!!!!!!! not yet in the requirements
-from scipy.stats import beta
+#from sklearn.cluster import AgglomerativeClustering #################!!!!!!!!! not yet in the requirements
+from scipy.optimize import minimize, shgo
+from tqdm import tqdm
+from numba import njit
 
 """
 We compute the homology group in different steps:
@@ -899,7 +901,7 @@ def radius_selection(points, local=False, ncluster=2):
         local: bool; if True, we estimate for each datapoint a maximal radius, otherwise the estimate is performed with the full histogram
         ncluster: int; the number of clusters to be used in the local estimation, if local is True
     Returns:
-        radius: array-like; if local is False it is a float, ptherwise an array of floats with the radius for each point
+        radius: array-like; if local is False it is a float, otherwise an array of floats with the maximum radius at each point
     """
 
     #### Notice: the agglomerative clustering procedure is very stupid, I am doing it in 1d, in the end I could just consider all the distances up to a value which make the optimal cluster
@@ -975,7 +977,7 @@ def bayesian_multinomial_mode(prior, samples, points, size=10000):
 
         return probs, var
 
-def reach_estimation(points, NN=10, d=2, n_stochastic=0, method='harmonic_mean'):
+def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_mean', delta=0.1):
     """
     We estimate the reach following Aamari et al. 2019. 
     If we use the method of 'harmonic_mean', we consider the tangent space to be estimated multiple times using PCA on the nearest neighbours of each point. Then an estimator of the distance of the points from the tangent space is built and used to estimate the reach.
@@ -983,35 +985,35 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=0, method='harmonic_mean')
 
     Parameters:
         points: array-like; an NXD array with the dataset
-        NN:int; the number of nearest neighbours to be considered to estimate the tangent plane (if n_stochastic>0, then There will be n_stochastic estimations each using int((NN+1)/n_stochastic) points)
-        n_stochastic: int; if greater than 1, we estimate the tangent plane n_stochastic times with int((NN+1)/n_stochastic) points
-        method: function or string; only considered if n_stochastic>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
+        NN:int; the number of nearest neighbours to be considered to estimate the tangent plane (if n_stochastic[0]>1, then There will be n_stochastic[1] estimations each using int((NN+1)/n_stochastic) or n_stochastic[1] points)
+        n_stochastic: tuple (int, int); if greater n_stochastic[0]>1, we estimate the tangent plane n_stochastic[0] times with int((NN+1)/n_stochastic) (or n_stochastic[1] if 'harmonic_mean' is chosen as a method) points
+        method: function or string; only considered if n_stochastic[0]>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
+        delta: float; you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations    
     """
     
     distances = distance_matrix(points, points)**2
 
     reach=np.inf
 
-    if n_stochastic>1:
+    if n_stochastic[0]>1:
         if method == 'harmonic_mean':
-            for i in range(len(points)):
+            for i in tqdm(range(len(points))):
                 Nearest_neigh=np.argsort(distances[i])
-                points_ = points-points[Nearest_neigh[0]]
+                points_ = points-points[i]
 
-                random_selection = Nearest_neigh[:NN+1]
-                np.random.shuffle(random_selection)
-
-                norms = np.zeros((len(points), n_stochastic))
-                mask = np.zeros((len(points), n_stochastic))
+                norms = np.zeros((len(points), n_stochastic[0]))
+                mask = np.zeros((len(points), n_stochastic[0]))
                 mask[i] = np.inf
-                for j in range(n_stochastic):
-                    X = points_[random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)]]
-                    C=1/(int(NN+1/n_stochastic)-1)*X.T@X
+                for j in range(n_stochastic[0]):
+                    random_selection = np.random.choice(Nearest_neigh[:NN+1],n_stochastic[1],replace=False) 
+                    
+                    X = points_[random_selection]
+                    C=1/(n_stochastic[1]-1)*X.T@X
                     _, eigenvectors = np.linalg.eigh(C)
                     projector = eigenvectors[:,:points.shape[1]-d]@eigenvectors[:,:points.shape[1]-d].T
                     points__ = points_@projector # we project directly on the "mixture" of the tangent space 
                     norms[:,j] = 2*np.sum(points__**2, axis=1)**0.5
-                    mask[random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)],j] = np.inf
+                    mask[random_selection,j] = np.inf
                 norms = (norms+mask)**-1
                 
                 # We compute the mean of the reciprocals. This estimates the factor (1/2d(x-y,T_xM))
@@ -1019,28 +1021,28 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=0, method='harmonic_mean')
                 norms = np.sum(norms,axis=1)
 
                 m = np.ones(len(points), dtype=bool)
-                m[i] = False
+                m[distances[i]<=delta]=False
 
                 reach=min(reach,min((distances[i,m] * norms[m] / N_points[m])))
         else:
-            for i in range(len(points)):
+            for i in tqdm(range(len(points))):
                 Nearest_neigh=np.argsort(distances[i])
                 points_ = points-points[Nearest_neigh[0]]
 
                 random_selection = Nearest_neigh[:NN+1]
                 np.random.shuffle(random_selection)
 
-                mask = distances[i]!=0
+                mask = distances[i]>delta
 
                 reach_=[]
-                for j in range(n_stochastic):
-                    X = points_[random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)]]
-                    C=1/(int(NN+1/n_stochastic)-1)*X.T@X
+                for j in range(n_stochastic[0]):
+                    X = points_[random_selection[j*int((NN+1)/n_stochastic[0]):(j+1)*int((NN+1)/n_stochastic[0])]]
+                    C=1/(int(NN+1/n_stochastic[0])-1)*X.T@X
                     _, eigenvectors = np.linalg.eigh(C)
                     projector = eigenvectors[:,:points.shape[1]-d]@eigenvectors[:,:points.shape[1]-d].T
                     points__ = points_@projector # we project directly on the "mixture" of the tangent space 
                     norms = 2*np.sum(points__**2, axis=1)**0.5
-                    mask2 = random_selection[j*int((NN+1)/n_stochastic):(j+1)*int((NN+1)/n_stochastic)]
+                    mask2 = random_selection[j*int((NN+1)/n_stochastic[0]):(j+1)*int((NN+1)/n_stochastic[0])]
                     mask[mask2] = False
                     reach_.append(min((distances[i, mask] / norms[mask])))
                 
@@ -1048,9 +1050,9 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=0, method='harmonic_mean')
                 
                 
                 
-    # if n_stochastic is not greater than 1, we estimate the tangent space only once and limit the reach estimation to the points that were not used to estimate the tangent space
+    # if n_stochastic[0] is not greater than 1, we estimate the tangent space only once and limit the reach estimation to the points that were not used to estimate the tangent space
     else:
-        for i in range(len(points)):
+        for i in tqdm(range(len(points))):
             Nearest_neigh=np.argsort(distances[i])
             X = points[Nearest_neigh[:NN+1]]
             points_ = points-X[0]
@@ -1059,14 +1061,290 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=0, method='harmonic_mean')
             _, eigenvectors = np.linalg.eigh(C)
             points_ = points_-(points_@eigenvectors[:,-d:])@eigenvectors[:,-d:].T #we remove the part that is on the tangent space and leave the orthogonal one
             norms = 2*np.sum(points_**2, axis=1)**0.5
-            #mask = distances[i]>0.02
-            #reach=min(reach,min((distances[i, mask] / norms[mask])))
-
-            # We estimate the reach only considering the datapoints that were not used to fit the tangent space
-            reach=min(reach,min((distances[i, Nearest_neigh[NN+1:]] / norms[Nearest_neigh[NN+1:]])))
-
-
+            mask = distances[i]>delta
+            reach=min(reach,min((distances[i, mask] / norms[mask])))
     return reach
-## Algorithm for reach estimation
+
+def _make_hessian(par_hessian, n):
+    """
+    Given a vector of parameters that represent the Hessian of a function, it returns a symmettric matrix.
+    The diagonal elements are the last n stored elements.
+    """
+
+    H = np.zeros((n,n))
+
+    H[np.triu_indices(n,1)] = par_hessian[:-n]
+    H += H.T
+    np.fill_diagonal(H, par_hessian[-n:])
+
+    return H
+
+@njit
+def make_hessian(par_hessian, n):
+    n = int(n)  # ensure integer for Numba
+    H = np.zeros((n, n))
+    idx = 0
+
+    # Fill upper triangle excluding diagonal
+    for i in range(n):
+        for j in range(i + 1, n):
+            H[i, j] = par_hessian[idx]
+            idx += 1
+
+    # Symmetrize by adding transpose
+    for i in range(n):
+        for j in range(i + 1, n):
+            H[j, i] = H[i, j]
+
+    # Fill diagonal
+    for i in range(n):
+        H[i, i] = par_hessian[-n + i]
+
+    return H
+
+@njit
+def der_hessian_indices(points_, n, loss):
+    der = np.zeros(n*(n+1)//2)
+    index = np.triu_indices(n,1)
+
+    der[:-n]= np.sum(loss[:,np.newaxis]*points_[:,index[0]]*points_[:,index[1]], axis=0)
+    der[-n:]= 0.5 * np.sum(loss[:,np.newaxis]*points_**2, axis=0)
+
+    return der
+
+def _least_square_fit(par, points_):
+    return 1/len(points_)*np.sum((par[0] + points_@par[1:len(points_[0])+1] + 0.5 * np.einsum('ij,jk,ik->i', points_, make_hessian(par[len(points_[0])+1:], len(points_[0])),  points_ ))**2)
+
+@njit
+def quadratic_forms(X, H):
+    n = X.shape[0]
+    out = np.empty(n)
+    for i in range(n):
+        x = X[i]
+        out[i] = np.dot(x, np.dot(H, x))
+    return out
+
+@njit
+def least_square_fit(par, points_):
+    Hessian_part =  0.5 * quadratic_forms( points_, make_hessian(par[len(points_[0])+1:], len(points_[0])))
+    return 1/len(points_)*np.sum((par[0] + points_@par[1:len(points_[0])+1] + Hessian_part)**2)
+
+
+def _jac_least_square_fit(par, points_):
+    loss = (par[0] + points_@par[1:len(points_[0])+1] + 0.5 * np.einsum('ij,jk,ik->i', points_, make_hessian(par[len(points_[0])+1:], len(points_[0])),  points_ ))*2/len(points_)
+    der_hessian = der_hessian_indices(points_, len(points_[0]), loss)
+    return np.hstack([np.sum(loss),
+                      np.sum(loss[:,np.newaxis]*points_, axis=0),
+                      der_hessian])
+
+@njit
+def jac_least_square_fit(par, points_):
+    loss = (par[0] + points_@par[1:len(points_[0])+1] + 0.5 * quadratic_forms(points_, make_hessian(par[len(points_[0])+1:], len(points_[0]))))*2/len(points_)
+    der_hessian = der_hessian_indices(points_, len(points_[0]), loss)
+
+    res = np.empty(len(par))
+    res[0] = np.sum(loss)
+    res[1:len(points_[0])+1] = np.sum(loss[:,np.newaxis]*points_, axis=0)
+    res[len(points_[0])+1:] = der_hessian
+
+    return res
+
+@njit
+def least_square_fit_jac(par, points_):
+    loss = (par[0] + points_@par[1:len(points_[0])+1] + 0.5 * quadratic_forms(points_, make_hessian(par[len(points_[0])+1:], len(points_[0]))))
+    
+    der_hessian = der_hessian_indices(points_, len(points_[0]), loss*2/len(points_))
+
+    jac = np.empty(len(par))
+    jac[0] = np.sum(loss)*2/len(points_)
+    jac[1:len(points_[0])+1] = np.sum(loss[:,np.newaxis]*points_, axis=0)*2/len(points_)
+    jac[len(points_[0])+1:] = der_hessian
+
+    return 1/len(points_)*np.sum(loss**2), jac
+
+@njit
+def _hessian_norm_neg(v, H):
+    """
+    Given a vector v and a Hessian matrix H, it returns the norm of the Hessian applied to v. We suppose that the gradients are orthonormal.
+    
+    Parameters:
+        v: array-like; a vector of shape (n,)
+        H: array-like; an array of symmetric matrix, shape (l,n,n)
+    Returns:
+        norm: float; the norm of the Hessian applied to v
+    """
+    norm = 0
+    for i in range(len(H)):
+        norm += (v.T@H[i]@v)**2
+    return -np.sqrt(norm/(v.T@v))
+
+@njit
+def hessian_norm_neg(v, H, G_cross):
+    vector = np.zeros(len(H))
+    for i in range(len(H)):
+        vector[i] = v.T@H[i]@v
+    norm = np.sqrt(vector.T@G_cross@vector/(v.T@v))
+    return -norm
+
+@njit
+def get_local_points(points, distances_row, NN):
+    Nearest_neigh = np.argsort(distances_row)
+    X = points[Nearest_neigh[:NN+1]]
+    X = X - X[0]
+    return X
+
+@profile
+def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
+    """
+    We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
+    In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
+
+    Parameters:
+        points: array-like; an NxD array with the position of the datapoints
+        NN: int; the number of nearest neighbours to be considered to estimate the curvature
+        implicit: bool; if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
+        trials: int; the number of initializations used to estimate the minimum of the fit
+        d:i int; the dimension of the manifold
+    """
+
+    distances = distance_matrix(points, points)
+
+    k_max = -np.inf
+
+    if implicit:
+        eq_cons = {'type': 'eq',
+           'fun' : lambda x: np.sum(x**2)-1,
+           'jac' : lambda x: 2*x}
+        
+        n_constr = len(points[0])-d
+        
+        """taylor_approximation = f[0] + grad_f@x + 0.5 * x.T@hessian_f@x ->
+        par[0] + par[1:len(x)+1]@x+0.5 * x.T @ par[len(x)+1:].reshape(len(x),len(x))@x 
+        
+        We need par to be minimized and points_ to be a tuple of points
+        We know that the hessian is symmetric, and that the function must evaluate 0 at the points
+        """
+
+        for i in tqdm(range(len(points))):
+            H = np.zeros((n_constr, len(points[0]), len(points[0])))
+            grads = np.zeros((n_constr, len(points[0])))
+            list_constraints = [eq_cons]
+            Nearest_neigh=np.argsort(distances[i])
+            X = points[Nearest_neigh[:NN+1]]
+            X = X-X[0]
+            #X = get_local_points(points, distances[i], NN)
+            for j in range(n_constr):
+                par = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                min_fun = np.inf
+                for k in range(trials):
+                    if j==0:
+                        par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                    else:
+                        par0 += np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
+                        par0 *= (1-jac_)
+                    #res = minimize(least_square_fit_jac, par0, args=(X,), method='SLSQP', jac=True, constraints=list_constraints)                    
+                    res = minimize(least_square_fit, par0, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
+                    #res = minimize(least_square_fit_jac, par0, args=(X,), method='trust-constr', jac=True, hess=lambda x, *args: np.zeros((len(par0),len(par0))), constraints=list_constraints)
+
+                    if k == 0 or res.fun < min_fun:
+                        min_fun = res.fun
+                        par = res.x
+                        
+                
+                # Add one constraint to ensure 'orthogonality' of the implicit functions
+                x_rem = np.argmax(np.abs(par)) # remove the biggest element
+                jac_ = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                jac_[x_rem] = 1
+                new_constraint = {'type': 'eq',
+                                  'fun': lambda x: x[x_rem],
+                                  'jac': lambda x: jac_}
+                list_constraints.append(new_constraint)
+
+                H[j] = make_hessian(par[len(X[0])+1:], len(X[0]))
+                grads[j] = par[1:len(X[0])+1]
+            
+            G = grads.T@grads
+            G = G + np.eye(len(G)) * 1e-9
+            G_cross = np.linalg.inv(G)
+            res_2 = shgo(hessian_norm_neg, [(0,1)]*len(X[0]), constraints=eq_cons, args=(H,G_cross,))
+
+            k_max = max(k_max,-res_2.fun)
+    else:
+        raise NotImplementedError
+    
+    return k_max
+
+def _parallel_curvature(points, eq_cons, distances, i=0, NN=50,  trials=10, n_constr=2 ):
+    H = np.zeros((n_constr, len(points[0]), len(points[0])))
+    list_constraints = [eq_cons]
+    Nearest_neigh=np.argsort(distances[i])
+    X = points[Nearest_neigh[:NN+1]]
+    X = X-X[0]
+    for j in range(n_constr):
+        par = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+        min_fun = np.inf
+        for k in range(trials):
+            if j==0:
+                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+            else:
+                par0 += np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
+                par0 *= (1-jac_)
+            res = minimize(least_square_fit, par0, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
+            if k == 0 or res.fun < min_fun:
+                min_fun = res.fun
+                par = res.x
+                
+        
+        # Add one constraint to ensure 'orthogonality' of the implicit functions
+        x_rem = np.argmax(np.abs(par)) # remove the biggest element
+        jac_ = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+        jac_[x_rem] = 1
+        new_constraint = {'type': 'eq',
+                          'fun': lambda x: x[x_rem],
+                          'jac': lambda x: jac_}
+        list_constraints.append(new_constraint)
+        H[j] = make_hessian(par[len(X[0])+1:], len(X[0]))
+    
+    res_2 = shgo(hessian_norm_neg, [(0.01,1)]*len(X[0]), args=(H,))
+    return -res_2.fun
+
+
+def parallel_max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
+    """
+    We parallelize the estimation of the maximum principal curvature.
+    
+    Parameters:
+        points: array-like; an NxD array with the position of the datapoints
+        NN: int; the number of nearest neighbours to be considered to estimate the curvature
+        implicit: bool; if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
+        trials: int; the number of initializations used to estimate the minimum of the fit
+        d:i int; the dimension of the manifold
+    """
+    
+    distances = distance_matrix(points, points)
+
+    if implicit:
+        eq_cons = {'type': 'eq',
+           'fun' : lambda x: np.sum(x**2)-1,
+           'jac' : lambda x: 2*x}
+        
+        n_constr = len(points[0])-d
+        
+        """taylor_approximation = f[0] + grad_f@x + 0.5 * x.T@hessian_f@x ->
+        par[0] + par[1:len(x)+1]@x+0.5 * x.T @ par[len(x)+1:].reshape(len(x),len(x))@x 
+        
+        We need par to be minimized and points_ to be a tuple of points
+        We know that the hessian is symmetric, and that the function must evaluate 0 at the points
+        """
+
+        k = Parallel(n_jobs=-1)(
+            delayed(_parallel_curvature)(points, eq_cons, distances, i, NN, trials, n_constr) for i in tqdm(range(len(points)))
+        )
+    else:
+        pass
+
+    return k
+
 ## Class for alpha complexes
 ## Menaging multiple time lags    
+## max_principal_curvature from explicit representation, tangent planes from the fitting of the costraints
