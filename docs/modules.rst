@@ -1,8 +1,6 @@
 Homology
 ==========
 
-This module contains utilities for homology computations and related tasks.
-
 Core module
 -----------
 

@@ -11,6 +11,7 @@ Matteo.ipynb
 *.ipynb
 scripts/experiments_ring.py
 *.npy
+scripts/sets_vs_nonsets.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

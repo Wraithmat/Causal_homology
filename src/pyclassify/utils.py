@@ -22,10 +22,8 @@ We compute the homology group in different steps:
     (possibly starting from a distance matrix, as it is done for k-means clustering with the multi-dimensional scaling ideas)
 
 2. analyse the homology group
-    2.1. with the straightforward @profile
-definition
-    2.2. using the Laplacian operator
-    2.3. using persistent homology
+    2.1. using the Laplacian operator
+    2.2. with the reduction scheme
 
 We test the algorithm in optimal theoretical setups and check:
     1. that we can retrieve the correct homology with the correct probability (as predicted in Niyogi, P., Smale, S. & Weinberger, S. "Finding the Homology of Submanifolds with High Confidence from Random Samples", proposition 3.2)
@@ -101,7 +99,14 @@ def slice_dok_rows(dok, keep_rows):
     return sliced_csr.todok()
 
 def heuristic_ordering(points):
-    """In order to optimize the number of elementary collapses, we can use an heuristic rule: we order the points by the distance from the center of mass"""
+    """In order to optimize the number of elementary collapses, we can use an heuristic rule: we order the points by the distance from the center of mass.
+    
+    parameters:
+        points (ndarray): an NxD array with the position of the datapoints
+
+    Returns:
+        points (ndarray): the points ordered by the distance from the center of mass
+    """
 
     center = np.mean(points, axis=0)
     distances = distance_matrix(center.reshape(1,-1), points)[0]
@@ -188,16 +193,18 @@ def fast_smallest_ball(points, distances=None, maxiter=1000, return_radius=True)
     by Kaspar Fischer, Bernd Gärtner, and Martin Kutz (Proc. 11th European Symposium on Algorithms (ESA), p. 630-641, 2003)
 
     Parameters:
-        points : array-like; an NxD array with the position of the datapoints
-        distances : array-like; precomputed distances between all points
-        maxiter: in; maximum number of iterations allowed to find the smallest enclosing ball
-        return_radius: bool; if True, only the radisus is returned
+        points  (ndarray): an NxD array with the position of the datapoints
+        distances  (ndarray); precomputed distances between all points
+        maxiter (int): maximum number of iterations allowed to find the smallest enclosing ball
+        return_radius (bool): if True, only the radisus is returned
 
+        
     Returns:
-        r : float; radius of the smallest enclosing ball
-        or if return_radius is False:
-        c: array-like; the center of the smallest enclosing ball
-        T: list; the indices of the points in the border of the SEB
+        float: If `return_radius` is True, the radius of the SEB.
+
+        tuple: If `return_radius` is False, returns a tuple `(c, T)` where:
+            - c (array-like): The center of the smallest enclosing ball.
+            - T (list): The indices of the points on the border of the SEB.
 
     References:
         https://github.com/hbf/miniball/blob/master/cpp/main/Seb-inl.h
@@ -268,13 +275,13 @@ def _Vietoris_Rips_complex(points, two_epsilon_matrix, simplices=None):
 @profile
 def Cech_complex(points, epsilon, max_complex_dimension=2):
     """
-    Given a set of point and a radius epsilon, it builds the Cech complex.
+    Given a set of points and a radius epsilon, it builds the Cech complex.
     
     Parameters:
-        points: array-like; an NxD array with the position of the datapoints
-        epsilon: float; the radius of the balls used to build the complex
+        points (ndarray): an NxD array with the position of the datapoints
+        epsilon (float): the radius of the balls used to build the complex
     Returns:
-        simplices: dict; a dictionary containing the simplices of the Cech complex
+        simplices (dict): a dictionary containing the simplices of the Cech complex
     """
     assert epsilon>0, "Epsilon should be a positive number"
     assert max_complex_dimension >= 0, "Max complex dimension should be a non-negative integer"
@@ -312,10 +319,10 @@ def collapsed_Cech_complex(points, epsilon, max_complex_dimension=2):
     Notice that this is not necessarily the minimal Cech complex that can be obtained by elementary collapse.
     
     Parameters:
-        points: array-like; an NxD array with the position of the datapoints
-        epsilon: float; the radius of the balls used to build the complex
+        points (ndarray): an NxD array with the position of the datapoints
+        epsilon (float): the radius of the balls used to build the complex
     Returns:
-        simplices: dict; a dictionary containing the collapsed simplices of the Cech complex
+        simplices (dict); a dictionary containing the collapsed simplices of the Cech complex
     """
     assert epsilon>0, "Epsilon should be a positive number"
     assert max_complex_dimension >= 0, "Max complex dimension should be a non-negative integer"
@@ -393,12 +400,13 @@ def collapsed_Cech_complex_with_sets(points, epsilon, max_complex_dimension=2):
     """
     Given a set of point and a radius epsilon, it builds the Cech complex while using the elementary simplicial collapse method to reduce it.
     Notice that this is not necessarily the minimal Cech complex that can be obtained by elementary collapse.
+    This version uses sets to store the simplices, which is more efficient for membership checks.
     
     Parameters:
-        points: array-like; an NxD array with the position of the datapoints
-        epsilon: float; the radius of the balls used to build the complex
+        points (ndarray): an NxD array with the position of the datapoints
+        epsilon (float): the radius of the balls used to build the complex
     Returns:
-        simplices: dict; a dictionary containing the collapsed simplices of the Cech complex
+        simplices (dict): a dictionary containing the collapsed simplices of the Cech complex
     """
     assert epsilon>0, "Epsilon should be a positive number"
     assert max_complex_dimension >= 0, "Max complex dimension should be a non-negative integer"
@@ -473,17 +481,18 @@ def collapsed_Cech_complex_with_sets(points, epsilon, max_complex_dimension=2):
 @profile
 def alpha_complex(points, epsilon, max_complex_dimension=2):
     """
-    By computing the intersection between a Cech complex and a Delaunay triangulation, it is possible to build a complex which contains a number of simplices linear in the number of points.
+    It computes the intersection between a Cech complex and a Delaunay triangulation.
+    
     Parameters:
-        points: array-like; an NxD array with the position of the datapoints
-        epsilon: float; the radius of the balls used to build the complex
+        points (ndarray): an NxD array with the position of the datapoints
+        epsilon (float): the radius of the balls used to build the complex
     Returns:
-        simplices: dict; a dictionary containing the collapsed simplices of the Cech complex
+        simplices (dict): a dictionary containing the collapsed simplices of the Cech complex
     """
     assert epsilon>0, "Epsilon should be a positive number"
     assert max_complex_dimension >= 0, "Max complex dimension should be a non-negative integer"
     assert len(points.shape) == 2, "Points should be a 2D array of shape (N,D)"
-    assert points.shape[0] > 0, "Points should not be empty"
+    assert points.shape[1] > 0, "Points should not be empty"
 
     delaunay_triangulation = Delaunay(points)
     index_del, neigh_del = delaunay_triangulation.vertex_neighbor_vertices
@@ -557,10 +566,10 @@ def Vietoris_Rips_complex(points, epsilon, max_complex_dimension=2):
     Given a set of point and a radius epsilon, it builds the Vietoris Rips complex up to order max_complex_dimension.
     
     Parameters:
-        points: array-like; an NxD array with the position of the datapoints
-        epsilon: float; the radius of the balls used to build the complex
+        points (ndarray): an NxD array with the position of the datapoints
+        epsilon (float): the radius of the balls used to build the complex
     Returns:
-        simplices: dict; a dictionary containing the simplices of the Vietoris Rips complex
+        simplices (dict): a dictionary containing the simplices of the Vietoris Rips complex
     """
     assert epsilon>0, "Epsilon should be a positive number"
     assert max_complex_dimension >= 0, "Max complex dimension should be a non-negative integer"
@@ -586,13 +595,13 @@ def Vietoris_Rips_complex(points, epsilon, max_complex_dimension=2):
 def pair_reduction(E, B, i, index_a, index_b):
     """
     Parameters:
-        E: dict; the collection of all the complexes (which are lists)
-        B: dict; the collection of all the boundary matrices (which are sparse matrices)
-        i: int; index of the complex to which b belongs
-        a,b: lists; the generators that can be reduced
+        E (dict): the collection of all the complexes (which are lists)
+        B (dict): the collection of all the boundary matrices (which are sparse matrices)
+        i (int): index of the complex to which b belongs
+        index_a, index_b (int): the index of the generators that can be reduced
     Returns:
-        E: dict; reduced collection of complexes, done in place
-        B: dict; reduced collection of boundary matrices, done in place
+        E (dict): reduced collection of complexes, done in place
+        B (dict): reduced collection of boundary matrices, done in place
     """
     
     #assert i+1 == len(b), f"The dimension of the generator b {b} should be equal to i+1 {i+1}"
@@ -677,13 +686,11 @@ def pair_reduction(E, B, i, index_a, index_b):
 def reduce_chain(E,B, maxiter=1e4):
     """
     Parameters:
-        E: dict; the collection of all the complexes (which are lists)
-        B: dict; the collection of all the boundary matrices (which are sparse matrices)
-        i: int; index of the complex to which b belongs
-        a,b: lists; the generators that can be reduced
+        E (dict): the collection of all the complexes (which are lists)
+        B (dict): the collection of all the boundary matrices (which are sparse matrices)
     Returns:
-        E: dict; reduced collection of complexes, done in place
-        B: dict; reduced collection of boundary matrices, done in place
+        E (dict): reduced collection of complexes, done in place
+        B (dict): reduced collection of boundary matrices, done in place
     """
     iter = 0
     for i in np.sort(list(B.keys()))[::-1]:
@@ -725,11 +732,11 @@ def homology_from_reduction(complex, max_consistent=None, maxiter=1e4):
     Given a complex, it returns the number of zero eigenvalues (at most max_k are computed).
 
     Parameters:
-        complex: dict; a dictionary with the list of the n-simplices;
-        max_k: int; the maximal number of zeros that will be searched for
-        max_consistent: int; it is the number of betti numbers which are expected to be computed correctly. If left as None, it is assumed that there are not k+1-simplices where k is the maximum index of the complex
+        complex (dict): a dictionary with the list of the n-simplices;
+        max_k (int): the maximal number of zeros that will be searched for
+        max_consistent (int): it is the number of betti numbers which are expected to be computed correctly. If left as None, it is assumed that there are not k+1-simplices where k is the maximum index of the complex
     Returns:
-        betti: list; the first max_consistent betti numbers
+        betti (list): the first max_consistent betti numbers
     """
 
     # We build the matrix representation of the border operator for each 
@@ -820,11 +827,11 @@ def homology_from_laplacian(complex, max_k=10, sparse=True):
     Given a complex, it returns the number of zero eigenvalues (at most max_k are computed).
 
     Parameters:
-        complex: dict; a dictionary with the list of the k-simplices for each k in keys (notices that the assumption is that there is no complex of dimension greater than max(k in keys), if this is not true, then the last computed betti number should not be trusted)
-        max_k: int; the maximal number of zeros that will be searched for
-        sparse: bool; if True, the laplacian matrix will be computed as sparse matrix (this implies that at most min(max_k, n-1) eigenvalues will be computed)
+        complex (dict): a dictionary with the list of the k-simplices for each k in keys (notices that the assumption is that there is no complex of dimension greater than max(k in keys), if this is not true, then the last computed betti number should not be trusted)
+        max_k (int): the maximal number of zeros that will be searched for
+        sparse (bool): if True, the laplacian matrix will be computed as sparse matrix (this implies that at most min(max_k, n-1) eigenvalues will be computed)
     Returns:
-        counts: list; a list where each entrance is the number of 0 eigenvalues of a laplacian matrix
+        counts (list): a list where each entrance is the number of 0 eigenvalues of a laplacian matrix
     """
 
     # We build the matrix representation of the border operator for each 
@@ -876,6 +883,7 @@ def homology_from_laplacian(complex, max_k=10, sparse=True):
 
 @profile
 def persistent_homology(points, epsilon_values=None):
+    raise NotImplementedError
     if epsilon_values is None:
         dist_m = distance_matrix(points,points)
         epsilon_values = np.linspace(np.min(dist_m), np.max(dist_m), 10)
@@ -892,11 +900,11 @@ def radius_selection(points, local=False, ncluster=2):
     Given the set of point we estimate the Bottleneck with en heuristic outlier detection method. The Bottleneck can be used to estimate the condition number.
     
     Parameters:
-        points: array-like; an NxD array with position of the datapoints
-        local: bool; if True, we estimate for each datapoint a maximal radius, otherwise the estimate is performed with the full histogram
-        ncluster: int; the number of clusters to be used in the local estimation, if local is True
+        points (array-like): an NxD array with position of the datapoints
+        local (bool): if True, we estimate for each datapoint a maximal radius, otherwise the estimate is performed with the full histogram
+        ncluster (int): the number of clusters to be used in the local estimation, if local is True
     Returns:
-        radius: array-like; if local is False it is a float, otherwise an array of floats with the maximum radius at each point
+        radius (array-like): if local is False it is a float, otherwise an array of floats with the maximum radius at each point
     """
 
     #### Notice: the agglomerative clustering procedure is very stupid, I am doing it in 1d, in the end I could just consider all the distances up to a value which make the optimal cluster
@@ -937,13 +945,13 @@ def bayesian_multinomial_mode(prior, samples, points, size=10000):
     We compute the probability of 'mode' to be the mode of a multinomial distribution. We consider a Dirichlet prior.
     
     Parameters:
-        prior: array; an array of the concentration parameters, it must be one item longer than 'points', the last item is the concentration of unseen points
-        samples: list; a list containing the samples from the multinomial distribution
-        points: list of tuples; a list of the already observed elements
-        size: int; number of samples for the Monte Carlo estimate
+        prior (ndarray): an array of the concentration parameters, it must be one item longer than 'points', the last item is the concentration of unseen points
+        samples (list of tuples): a list containing the samples from the multinomial distribution
+        points (list of tuples): a list of the already observed elements
+        size (int): number of samples for the Monte Carlo estimate
     Returns:
-        probs: array; an array of the probability of each point to be the mode
-        var: array; the variance of the single estimates
+        probs (ndarray): an array of the probability of each point to be the mode
+        var (ndarray): the variance of the single estimates
     """
 
     assert len(prior) == len(points) + 1
@@ -983,11 +991,15 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
     Otherwise we consider for each point n_stochastic estimations of the reach and take some statistic of it. 
 
     Parameters:
-        points: array-like; an NXD array with the dataset
-        NN:int; the number of nearest neighbours to be considered to estimate the tangent plane (if n_stochastic[0]>1, then There will be n_stochastic[1] estimations each using int((NN+1)/n_stochastic) or n_stochastic[1] points)
-        n_stochastic: tuple (int, int); if greater n_stochastic[0]>1, we estimate the tangent plane n_stochastic[0] times with int((NN+1)/n_stochastic) (or n_stochastic[1] if 'harmonic_mean' is chosen as a method) points
-        method: function or string; only considered if n_stochastic[0]>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
-        delta: float; you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations    
+        points (array-like): an NXD array with the dataset
+        NN (int): the number of nearest neighbours to be considered to estimate the tangent plane (if n_stochastic[0]>1, then There will be n_stochastic[1] estimations each using int((NN+1)/n_stochastic) or n_stochastic[1] points)
+        n_stochastic (tuple (int, int)): if greater n_stochastic[0]>1, we estimate the tangent plane n_stochastic[0] times with int((NN+1)/n_stochastic) (or n_stochastic[1] if 'harmonic_mean' is chosen as a method) points
+        method (function or string): only considered if n_stochastic[0]>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
+        delta (float): you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations    
+    
+    Returns:
+        reach (float): the estimated reach of the dataset
+    
     """
     
     distances = distance_matrix(points, points)**2
@@ -1161,21 +1173,21 @@ def least_square_fit_jac(par, points_):
 
     return 1/len(points_)*np.sum(loss**2), jac
 
-@njit
-def _hessian_norm_neg(v, H):
-    """
-    Given a vector v and a Hessian matrix H, it returns the norm of the Hessian applied to v. We suppose that the gradients are orthonormal.
-    
-    Parameters:
-        v: array-like; a vector of shape (n,)
-        H: array-like; an array of symmetric matrix, shape (l,n,n)
-    Returns:
-        norm: float; the norm of the Hessian applied to v
-    """
-    norm = 0
-    for i in range(len(H)):
-        norm += (v.T@H[i]@v)**2
-    return -np.sqrt(norm/(v.T@v))
+#@njit
+#def _hessian_norm_neg(v, H):
+#    """
+#    Given a vector v and a Hessian matrix H, it returns the norm of the Hessian applied to v. We suppose that the gradients are orthonormal.
+#    
+#    Parameters:
+#        v: array-like; a vector of shape (n,)
+#        H: array-like; an array of symmetric matrix, shape (l,n,n)
+#    Returns:
+#        norm: float; the norm of the Hessian applied to v
+#    """
+#    norm = 0
+#    for i in range(len(H)):
+#        norm += (v.T@H[i]@v)**2
+#    return -np.sqrt(norm/(v.T@v))
 
 @njit
 def hessian_norm_neg(v, H, grads):
@@ -1195,18 +1207,18 @@ def get_local_points(points, distances_row, NN):
     return X
 
 @profile
-def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2, cross_val=None):
+def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
 
     Parameters:
-        points: array-like; an NxD array with the position of the datapoints
-        NN: int; the number of nearest neighbours to be considered to estimate the curvature
-        implicit: bool; if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
-        trials: int or str; the number of initializations used to estimate the minimum of the fit (with SLSQP) or a method for global minimization (for now only 'shgo' is implemented, but it might work only in very small dimensions)
-        d:i int; the dimension of the manifold
-        cross_val: None or tuple; if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
+        points (array-like): an NxD array with the position of the datapoints
+        NN (int): the number of nearest neighbours to be considered to estimate the curvature
+        implicit (bool): if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
+        trials (int or str): the number of initializations used to estimate the minimum of the fit (with SLSQP) or a method for global minimization (for now only 'shgo' is implemented, but it might work only in very small dimensions)
+        d (int): the dimension of the manifold
+        cross_val (None or tuple): if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
     """
 
     distances = distance_matrix(points, points)

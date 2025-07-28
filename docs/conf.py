@@ -21,6 +21,8 @@ extensions = [
     'sphinx.ext.viewcode',
 ]
 autosummary_generate = False
+napoleon_google_docstring = True
+napoleon_custom_sections = [('Returns', 'params_style')]
 
 templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
