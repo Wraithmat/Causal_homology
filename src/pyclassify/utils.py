@@ -204,7 +204,7 @@ def fast_smallest_ball(points, distances=None, maxiter=1000, return_radius=True)
     """
 
     assert len(points.shape) == 2, "Points should be a 2D array of shape (N,D)"
-    assert points.shape[0] > 0, "Points should not be empty"
+    assert points.shape[1] > 0, "Points should not be empty"
     # Notice: we are mostly focusing on the case in which the total number of points is smaller than the number of dimensions
 
     # Initialize the center of the sphere on one point, T is then given by the index of the furthest point from there
@@ -719,7 +719,6 @@ def parallel_ker(B):
         sing_vals[:min(B.shape[0],B.shape[1])] = np.linalg.svd(B.todense(), compute_uv=False, full_matrices=False)
     return sing_vals
 
-
 @profile 
 def homology_from_reduction(complex, max_consistent=None, maxiter=1e4):
     """
@@ -876,10 +875,6 @@ def homology_from_laplacian(complex, max_k=10, sparse=True):
     return [np.count_nonzero([np.isclose(eig[i][j],0) for j in range(len(eig[i]))]) for i in range(len(eig))]
 
 @profile
-def homology(complex):
-    pass
-
-@profile
 def persistent_homology(points, epsilon_values=None):
     if epsilon_values is None:
         dist_m = distance_matrix(points,points)
@@ -927,14 +922,15 @@ def radius_selection(points, local=False, ncluster=2):
             radius = np.linspace(0,max(distances_hist),100)[peaks[1]]/2
         return radius
     else:
-        radius = np.zeros(len(points))
-        for k in range(len(indptr)-1):
-            neigh=indices[indptr[k]:indptr[k+1]]
-            point_ = distances[k,neigh]
-            clust = AgglomerativeClustering(n_clusters=ncluster).fit(point_.reshape(-1,1))
-            l_star = clust.labels_[np.argmin(distances[k,neigh])]
-            radius[k] = np.max(distances[k,neigh[clust.labels_==l_star]])/2
-        return radius
+        raise NotImplementedError
+        #radius = np.zeros(len(points))
+        #for k in range(len(indptr)-1):
+        #    neigh=indices[indptr[k]:indptr[k+1]]
+        #    point_ = distances[k,neigh]
+        #    clust = AgglomerativeClustering(n_clusters=ncluster).fit(point_.reshape(-1,1))
+        #    l_star = clust.labels_[np.argmin(distances[k,neigh])]
+        #    radius[k] = np.max(distances[k,neigh[clust.labels_==l_star]])/2
+        #return radius
 
 def bayesian_multinomial_mode(prior, samples, points, size=10000):
     """
@@ -945,6 +941,9 @@ def bayesian_multinomial_mode(prior, samples, points, size=10000):
         samples: list; a list containing the samples from the multinomial distribution
         points: list of tuples; a list of the already observed elements
         size: int; number of samples for the Monte Carlo estimate
+    Returns:
+        probs: array; an array of the probability of each point to be the mode
+        var: array; the variance of the single estimates
     """
 
     assert len(prior) == len(points) + 1
@@ -1179,10 +1178,12 @@ def _hessian_norm_neg(v, H):
     return -np.sqrt(norm/(v.T@v))
 
 @njit
-def hessian_norm_neg(v, H, G_cross):
+def hessian_norm_neg(v, H, grads):
     vector = np.zeros(len(H))
     for i in range(len(H)):
         vector[i] = v.T@H[i]@v
+    G = grads@grads.T
+    G_cross = np.linalg.pinv(G)
     norm = np.sqrt(vector.T@G_cross@vector/(v.T@v))
     return -norm
 
@@ -1194,7 +1195,7 @@ def get_local_points(points, distances_row, NN):
     return X
 
 @profile
-def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
+def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2, cross_val=None):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
@@ -1203,8 +1204,9 @@ def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
         points: array-like; an NxD array with the position of the datapoints
         NN: int; the number of nearest neighbours to be considered to estimate the curvature
         implicit: bool; if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
-        trials: int; the number of initializations used to estimate the minimum of the fit
+        trials: int or str; the number of initializations used to estimate the minimum of the fit (with SLSQP) or a method for global minimization (for now only 'shgo' is implemented, but it might work only in very small dimensions)
         d:i int; the dimension of the manifold
+        cross_val: None or tuple; if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
     """
 
     distances = distance_matrix(points, points)
@@ -1230,26 +1232,61 @@ def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
             grads = np.zeros((n_constr, len(points[0])))
             list_constraints = [eq_cons]
             Nearest_neigh=np.argsort(distances[i])
+            if cross_val is not None:
+                NN += int(cross_val[0]*NN)
+
             X = points[Nearest_neigh[:NN+1]]
             X = X-X[0]
             #X = get_local_points(points, distances[i], NN)
             for j in range(n_constr):
                 par = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
-                min_fun = np.inf
-                for k in range(trials):
-                    if j==0:
-                        par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
-                    else:
-                        par0 += np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
-                        par0 *= (1-jac_)
-                    #res = minimize(least_square_fit_jac, par0, args=(X,), method='SLSQP', jac=True, constraints=list_constraints)                    
-                    res = minimize(least_square_fit, par0, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
-                    #res = minimize(least_square_fit_jac, par0, args=(X,), method='trust-constr', jac=True, hess=lambda x, *args: np.zeros((len(par0),len(par0))), constraints=list_constraints)
+                
+                if trials == 'shgo':
+                    res = shgo(least_square_fit, [(0,1)]*(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1), args=(X,), constraints=list_constraints, options={'method': 'SLSQP', 'jac': jac_least_square_fit})
+                    par = res.x
+                else:
+                    if cross_val is None:
+                        min_fun = np.inf
+                        for k in range(trials):
+                            if j==0:
+                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                            else:
+                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
+                                par0 *= (1-jac_)
 
-                    if k == 0 or res.fun < min_fun:
-                        min_fun = res.fun
+                            res = minimize(least_square_fit, par0, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
+
+                            if k == 0 or res.fun < min_fun:
+                                min_fun = res.fun
+                                par = res.x
+                    else:
+                        # We use a cross-validation procedure to estimate the best fit
+                        min_fun = np.inf
+                        for k in range(trials):
+                            if j==0:
+                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                            else:
+                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
+                                par0 *= (1-jac_)
+
+                            # We split the points in two parts, one for the fitting and one for the validation
+                            random_selection = np.random.choice(len(X), int(cross_val[1]*len(X)), replace=False)
+                            X_fit = X[random_selection]
+                            X_val = X[np.setdiff1d(np.arange(len(X)), random_selection)]
+
+                            res = minimize(least_square_fit, par0, args=(X_fit,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
+
+                            # We compute the loss on the validation set
+                            loss_val = least_square_fit(res.x, X_val)
+
+                            if k == 0 or loss_val < min_fun:
+                                min_fun = res.fun
+                                par = res.x
+
+                        # We use the best fit to estimate the curvature with all the points
+                        res = minimize(least_square_fit, par, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
                         par = res.x
-                        
+                            
                 
                 # Add one constraint to ensure 'orthogonality' of the implicit functions
                 x_rem = np.argmax(np.abs(par)) # remove the biggest element
@@ -1263,10 +1300,7 @@ def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
                 H[j] = make_hessian(par[len(X[0])+1:], len(X[0]))
                 grads[j] = par[1:len(X[0])+1]
             
-            G = grads.T@grads
-            G = G + np.eye(len(G)) * 1e-9
-            G_cross = np.linalg.inv(G)
-            res_2 = shgo(hessian_norm_neg, [(0,1)]*len(X[0]), constraints=eq_cons, args=(H,G_cross,))
+            res_2 = shgo(hessian_norm_neg, [(0,1)]*len(X[0]), constraints=eq_cons, args=(H,grads))
 
             k_max = max(k_max,-res_2.fun)
     else:
@@ -1274,77 +1308,78 @@ def max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
     
     return k_max
 
-def _parallel_curvature(points, eq_cons, distances, i=0, NN=50,  trials=10, n_constr=2 ):
-    H = np.zeros((n_constr, len(points[0]), len(points[0])))
-    list_constraints = [eq_cons]
-    Nearest_neigh=np.argsort(distances[i])
-    X = points[Nearest_neigh[:NN+1]]
-    X = X-X[0]
-    for j in range(n_constr):
-        par = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
-        min_fun = np.inf
-        for k in range(trials):
-            if j==0:
-                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
-            else:
-                par0 += np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
-                par0 *= (1-jac_)
-            res = minimize(least_square_fit, par0, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
-            if k == 0 or res.fun < min_fun:
-                min_fun = res.fun
-                par = res.x
-                
-        
-        # Add one constraint to ensure 'orthogonality' of the implicit functions
-        x_rem = np.argmax(np.abs(par)) # remove the biggest element
-        jac_ = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
-        jac_[x_rem] = 1
-        new_constraint = {'type': 'eq',
-                          'fun': lambda x: x[x_rem],
-                          'jac': lambda x: jac_}
-        list_constraints.append(new_constraint)
-        H[j] = make_hessian(par[len(X[0])+1:], len(X[0]))
-    
-    res_2 = shgo(hessian_norm_neg, [(0.01,1)]*len(X[0]), args=(H,))
-    return -res_2.fun
+#def _parallel_curvature(points, eq_cons, distances, i=0, NN=50,  trials=10, n_constr=2 ):
+#    H = np.zeros((n_constr, len(points[0]), len(points[0])))
+#    list_constraints = [eq_cons]
+#    Nearest_neigh=np.argsort(distances[i])
+#    X = points[Nearest_neigh[:NN+1]]
+#    X = X-X[0]
+#    for j in range(n_constr):
+#        par = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+#        min_fun = np.inf
+#        for k in range(trials):
+#            if j==0:
+#                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+#            else:
+#                par0 += np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
+#                par0 *= (1-jac_)
+#            res = minimize(least_square_fit, par0, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
+#            if k == 0 or res.fun < min_fun:
+#                min_fun = res.fun
+#                par = res.x
+#                
+#        
+#        # Add one constraint to ensure 'orthogonality' of the implicit functions
+#        x_rem = np.argmax(np.abs(par)) # remove the biggest element
+#        jac_ = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+#        jac_[x_rem] = 1
+#        new_constraint = {'type': 'eq',
+#                          'fun': lambda x: x[x_rem],
+#                          'jac': lambda x: jac_}
+#        list_constraints.append(new_constraint)
+#        H[j] = make_hessian(par[len(X[0])+1:], len(X[0]))
+#    
+#    res_2 = shgo(hessian_norm_neg, [(0.01,1)]*len(X[0]), args=(H,))
+#    return -res_2.fun
+#
+#
+#def parallel_max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
+#    """
+#    We parallelize the estimation of the maximum principal curvature.
+#    
+#    Parameters:
+#        points: array-like; an NxD array with the position of the datapoints
+#        NN: int; the number of nearest neighbours to be considered to estimate the curvature
+#        implicit: bool; if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
+#        trials: int; the number of initializations used to estimate the minimum of the fit
+#        d:i int; the dimension of the manifold
+#    """
+#    
+#    distances = distance_matrix(points, points)
+#
+#    if implicit:
+#        eq_cons = {'type': 'eq',
+#           'fun' : lambda x: np.sum(x**2)-1,
+#           'jac' : lambda x: 2*x}
+#        
+#        n_constr = len(points[0])-d
+#        
+#        """taylor_approximation = f[0] + grad_f@x + 0.5 * x.T@hessian_f@x ->
+#        par[0] + par[1:len(x)+1]@x+0.5 * x.T @ par[len(x)+1:].reshape(len(x),len(x))@x 
+#        
+#        We need par to be minimized and points_ to be a tuple of points
+#        We know that the hessian is symmetric, and that the function must evaluate 0 at the points
+#        """
+#
+#        k = Parallel(n_jobs=-1)(
+#            delayed(_parallel_curvature)(points, eq_cons, distances, i, NN, trials, n_constr) for i in tqdm(range(len(points)))
+#        )
+#    else:
+#        pass
+#
+#    return k
 
 
-def parallel_max_principal_curvature(points, NN=50, implicit=False, trials=10, d=2):
-    """
-    We parallelize the estimation of the maximum principal curvature.
-    
-    Parameters:
-        points: array-like; an NxD array with the position of the datapoints
-        NN: int; the number of nearest neighbours to be considered to estimate the curvature
-        implicit: bool; if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
-        trials: int; the number of initializations used to estimate the minimum of the fit
-        d:i int; the dimension of the manifold
-    """
-    
-    distances = distance_matrix(points, points)
-
-    if implicit:
-        eq_cons = {'type': 'eq',
-           'fun' : lambda x: np.sum(x**2)-1,
-           'jac' : lambda x: 2*x}
-        
-        n_constr = len(points[0])-d
-        
-        """taylor_approximation = f[0] + grad_f@x + 0.5 * x.T@hessian_f@x ->
-        par[0] + par[1:len(x)+1]@x+0.5 * x.T @ par[len(x)+1:].reshape(len(x),len(x))@x 
-        
-        We need par to be minimized and points_ to be a tuple of points
-        We know that the hessian is symmetric, and that the function must evaluate 0 at the points
-        """
-
-        k = Parallel(n_jobs=-1)(
-            delayed(_parallel_curvature)(points, eq_cons, distances, i, NN, trials, n_constr) for i in tqdm(range(len(points)))
-        )
-    else:
-        pass
-
-    return k
-
-## Class for alpha complexes
-## Menaging multiple time lags    
-## max_principal_curvature from explicit representation, tangent planes from the fitting of the costraints
+### Class for alpha complexes
+### Menaging multiple time lags    
+### max_principal_curvature from explicit representation, tangent planes from the fitting of the costraints
