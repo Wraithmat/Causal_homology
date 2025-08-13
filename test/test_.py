@@ -74,7 +74,7 @@ def test_reach_estimations():
     points = np.linspace(0,2*np.pi, 200)
     torus=np.vstack([np.cos(points[:]), np.sin(points[:])]).T
 
-    C = max_principal_curvature(torus, NN=50, d=1, cross_val=(0.1,0.9))
+    C = max_principal_curvature(torus, NN=50, d=1, cross_val=(1.1,0.9))
 
     assert C>0.8 and C<1.2
 
