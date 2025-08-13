@@ -922,12 +922,12 @@ def radius_selection(points, local=False, ncluster=2):
         kernel = gaussian_kde(distances_hist, bw_method='silverman')
         c=kernel(np.linspace(0,max(distances_hist[1:]),100))
         peaks, _ =find_peaks(c, prominence=0.1)
-        if len(peaks) == 0:
+        if len(peaks) <= 1:
             radius = np.mean(distances_hist)
-        elif len(peaks) == 1:
-            radius = np.linspace(0,max(distances_hist),100)[peaks[0]]
         elif len(peaks) > 1:
             radius = np.linspace(0,max(distances_hist),100)[peaks[1]]/2
+        #elif len(peaks) == 1:
+        #    radius = np.linspace(0,max(distances_hist),100)[peaks[0]]
         return radius
     else:
         raise NotImplementedError
@@ -984,7 +984,7 @@ def bayesian_multinomial_mode(prior, samples, points, size=10000):
 
         return probs, var
 
-def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_mean', delta=0.1):
+def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_mean', delta=0.1, return_all=False, seed=1970):
     """
     We estimate the reach following Aamari et al. 2019. 
     If we use the method of 'harmonic_mean', we consider the tangent space to be estimated multiple times using PCA on the nearest neighbours of each point. Then an estimator of the distance of the points from the tangent space is built and used to estimate the reach.
@@ -993,7 +993,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
     Parameters:
         points (array-like): an NXD array with the dataset
         NN (int): the number of nearest neighbours to be considered to estimate the tangent plane (if n_stochastic[0]>1, then There will be n_stochastic[1] estimations each using int((NN+1)/n_stochastic) or n_stochastic[1] points)
-        n_stochastic (tuple (int, int)): if greater n_stochastic[0]>1, we estimate the tangent plane n_stochastic[0] times with int((NN+1)/n_stochastic) (or n_stochastic[1] if 'harmonic_mean' is chosen as a method) points
+        n_stochastic (tuple (int, int)): if n_stochastic[0]>1, we estimate the tangent plane n_stochastic[0] times with int((NN+1)/n_stochastic) (or n_stochastic[1] if 'harmonic_mean' is chosen as a method) points
         method (function or string): only considered if n_stochastic[0]>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
         delta (float): you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations    
     
@@ -1002,9 +1002,13 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
     
     """
     
+    np.random.seed(seed)
     distances = distance_matrix(points, points)**2
 
-    reach=np.inf
+    if return_all:
+        reach = np.zeros(len(points))
+    else:
+        reach = np.inf
 
     if n_stochastic[0]>1:
         if method == 'harmonic_mean':
@@ -1034,7 +1038,10 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
                 m = np.ones(len(points), dtype=bool)
                 m[distances[i]<=delta]=False
 
-                reach=min(reach,min((distances[i,m] * norms[m] / N_points[m])))
+                if return_all:
+                    reach[i] = min((distances[i,m] * norms[m] / N_points[m]))
+                else:
+                    reach=min(reach,min((distances[i,m] * norms[m] / N_points[m])))
         else:
             for i in tqdm(range(len(points))):
                 Nearest_neigh=np.argsort(distances[i])
@@ -1190,13 +1197,18 @@ def least_square_fit_jac(par, points_):
 #    return -np.sqrt(norm/(v.T@v))
 
 @njit
-def hessian_norm_neg(v, H, grads):
+def hessian_norm_neg(v, H, G_cross, grads):
+
+    #We should ensure that v is in the tangent space
+    v = (np.eye(len(v))-grads.T@G_cross@grads)@v
+
+    if v@v.T < 1e-10: return 0
+
     vector = np.zeros(len(H))
     for i in range(len(H)):
         vector[i] = v.T@H[i]@v
-    G = grads@grads.T
-    G_cross = np.linalg.pinv(G)
-    norm = np.sqrt(vector.T@G_cross@vector/(v.T@v))
+    
+    norm = np.sqrt(vector.T@G_cross@vector)/(v.T@v)
     return -norm
 
 @njit
@@ -1207,7 +1219,7 @@ def get_local_points(points, distances_row, NN):
     return X
 
 @profile
-def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None):
+def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, seed=1970):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
@@ -1221,9 +1233,14 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         cross_val (None or tuple): if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
     """
 
+    np.random.seed(seed)
+
     distances = distance_matrix(points, points)
 
-    k_max = -np.inf
+    if return_all:
+        k_max = np.zeros(len(points))
+    else:
+        k_max = -np.inf
 
     if implicit:
         eq_cons = {'type': 'eq',
@@ -1238,14 +1255,16 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         We need par to be minimized and points_ to be a tuple of points
         We know that the hessian is symmetric, and that the function must evaluate 0 at the points
         """
+        
+        if cross_val is not None:
+                NN += int(cross_val[0]*NN)
+
 
         for i in tqdm(range(len(points))):
             H = np.zeros((n_constr, len(points[0]), len(points[0])))
             grads = np.zeros((n_constr, len(points[0])))
             list_constraints = [eq_cons]
             Nearest_neigh=np.argsort(distances[i])
-            if cross_val is not None:
-                NN += int(cross_val[0]*NN)
 
             X = points[Nearest_neigh[:NN+1]]
             X = X-X[0]
@@ -1297,7 +1316,8 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
 
                         # We use the best fit to estimate the curvature with all the points
                         res = minimize(least_square_fit, par, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
-                        par = res.x
+                        if res.success:
+                            par = res.x
                             
                 
                 # Add one constraint to ensure 'orthogonality' of the implicit functions
@@ -1312,9 +1332,18 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
                 H[j] = make_hessian(par[len(X[0])+1:], len(X[0]))
                 grads[j] = par[1:len(X[0])+1]
             
-            res_2 = shgo(hessian_norm_neg, [(0,1)]*len(X[0]), constraints=eq_cons, args=(H,grads))
+            G = grads@grads.T
+            G_cross = np.linalg.pinv(G)
 
-            k_max = max(k_max,-res_2.fun)
+            #eq_cons_proj = {'type': 'eq',
+            #            'fun' : lambda x: np.sum(((np.eye(len(x))-grads.T@G_cross@grads)@x)**2)-1}
+            #res_2 = shgo(hessian_norm_neg, [(0,1)]*len(X[0]), constraints=eq_cons_proj, args=(H,G_cross,grads))
+            res_2 = shgo(hessian_norm_neg, [(-np.inf,np.inf)]*len(X[0]), args=(H,G_cross,grads))
+
+            if return_all:
+                k_max[i] = -res_2.fun
+            else:
+                k_max = max(k_max,-res_2.fun)
     else:
         raise NotImplementedError
     
@@ -1391,7 +1420,8 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
 #
 #    return k
 
-
+#FUTURE PLANS:
 ### Class for alpha complexes
 ### Menaging multiple time lags    
 ### max_principal_curvature from explicit representation, tangent planes from the fitting of the costraints
+### using diffusion distance to select the points to be used to estimate the curvature

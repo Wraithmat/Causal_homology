@@ -3,6 +3,7 @@
 curvature.py
 simplices_per_algorithm.py
 lightning_logs/
+src/pyclassify/circle_test_reach/
 scalability.py
 cifar-10-batches-py
 cifar-10-python.tar.gz
