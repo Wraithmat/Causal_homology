@@ -12,6 +12,8 @@ from scipy.signal import find_peaks
 from scipy.optimize import minimize, shgo
 from tqdm import tqdm
 from numba import njit
+from scipy.stats import rankdata
+
 
 """
 We compute the homology group in different steps:
@@ -101,7 +103,7 @@ def slice_dok_rows(dok, keep_rows):
 def heuristic_ordering(points):
     """In order to optimize the number of elementary collapses, we can use an heuristic rule: we order the points by the distance from the center of mass.
     
-    parameters:
+    Parameters:
         points (ndarray): an NxD array with the position of the datapoints
 
     Returns:
@@ -113,6 +115,31 @@ def heuristic_ordering(points):
     order = np.argsort(-distances)
 
     return points[order]
+
+def aamari_sparsification(points, N=300, initial=0):
+    """
+    Given a point cloud and a number of points, we select a subset of points with a min-max procedure.
+
+    Parameters:
+        points (ndarray): a NxD array with the positions of datapoints
+        N (int): number of datapoints to be selected
+        initial (int): index of the initial point
+    
+    Returns:
+        indices (ndarray): a N array containing the list of selected points
+    """
+
+    selected_points = [initial]
+
+    distances = np.linalg.norm(points-points[initial], axis=1).reshape(1,-1)
+
+    for i in range(N-1):
+        new_index = np.argmax(np.min(distances,axis=0))
+        selected_points.append(new_index)
+        distances = np.vstack([distances, np.linalg.norm(points-points[new_index], axis=1)])
+        distances[:,selected_points]=0
+
+    return np.array(selected_points)
 
 @profile
 def _project_affine_space(p, points, eps=1e-9):
@@ -984,7 +1011,7 @@ def bayesian_multinomial_mode(prior, samples, points, size=10000):
 
         return probs, var
 
-def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_mean', delta=0.1, return_all=False, seed=1970):
+def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_mean', delta=0.1, return_all=False, seed=1970, subset=None):
     """
     We estimate the reach following Aamari et al. 2019. 
     If we use the method of 'harmonic_mean', we consider the tangent space to be estimated multiple times using PCA on the nearest neighbours of each point. Then an estimator of the distance of the points from the tangent space is built and used to estimate the reach.
@@ -996,7 +1023,8 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
         n_stochastic (tuple (int, int)): if n_stochastic[0]>1, we estimate the tangent plane n_stochastic[0] times with int((NN+1)/n_stochastic) (or n_stochastic[1] if 'harmonic_mean' is chosen as a method) points
         method (function or string): only considered if n_stochastic[0]>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
         delta (float): you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations    
-    
+        subset (None or array): if None, the curvature is computed on all the points, otherwise it is computed only on the points in the subset. If an array, it must be an array of indices to be considered. If 'return_all' then 0 is returned for the curvature of the points which are not in the subset.
+        
     Returns:
         reach (float): the estimated reach of the dataset
     
@@ -1012,7 +1040,9 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
 
     if n_stochastic[0]>1:
         if method == 'harmonic_mean':
-            for i in tqdm(range(len(points))):
+            if subset is None:
+                subset =range(len(points))
+            for i in tqdm(subset):
                 Nearest_neigh=np.argsort(distances[i])
                 points_ = points-points[i]
 
@@ -1219,7 +1249,7 @@ def get_local_points(points, distances_row, NN):
     return X
 
 @profile
-def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, seed=1970):
+def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, seed=1970, subset=None):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
@@ -1231,6 +1261,7 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         trials (int or str): the number of initializations used to estimate the minimum of the fit (with SLSQP) or a method for global minimization (for now only 'shgo' is implemented, but it might work only in very small dimensions)
         d (int): the dimension of the manifold
         cross_val (None or tuple): if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
+        subset (None or array): if None, the curvature is computed on all the points, otherwise it is computed only on the points in the subset. If an array, it must be an array of indices to be considered. If 'return_all' then 0 is returned for the curvature of the points which are not in the subset.
     """
 
     np.random.seed(seed)
@@ -1259,8 +1290,7 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         if cross_val is not None:
                 NN += int(cross_val[0]*NN)
 
-
-        for i in tqdm(range(len(points))):
+        for i in tqdm(subset):
             H = np.zeros((n_constr, len(points[0]), len(points[0])))
             grads = np.zeros((n_constr, len(points[0])))
             list_constraints = [eq_cons]
@@ -1348,6 +1378,75 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         raise NotImplementedError
     
     return k_max
+
+def delay_embedding(series, tau, max_lag, delta):
+    """
+    Given the time series, we compute the values of the estimator E1 (see Cao 1997 Physica D) for different embedding dimensions."""
+
+
+    y = np.zeros((np.ceil((len(series)-max_lag*tau)/delta).astype(int), max_lag+1))
+
+    for i in range(max_lag+1):
+        y[:,i] = series[i*tau:len(series)-max_lag*tau+i*tau:delta]
+
+    a = np.zeros(((len(series)-max_lag*tau)//delta+1,max_lag-1))
+
+    y1_dist = distance_matrix(y[:,0].reshape([-1,1]), y[:,0].reshape([-1,1]), p=2)
+
+    for i in range(2,max_lag+1):
+        y2_dist = distance_matrix(y[:,:i], y[:,:i], p=np.inf)
+        y2_dist += np.diag(np.ones(y2_dist.shape[0]) * 1e6)  # Avoid division by zero
+        nn = np.argmin(y2_dist, axis=1)
+        a[:,i-2] = y2_dist[np.arange(len(y1_dist)), nn] / y1_dist[np.arange(len(y2_dist)), nn]
+        y1_dist = +y2_dist
+        y1_dist -= np.diag(np.ones(y1_dist.shape[0]) * 1e6)  # Avoid division by zero
+    
+    E = np.zeros(max_lag-1)
+
+    for i in range(max_lag-1):
+        E[i] = 1/(len(y)-tau*(i+1)) * np.sum(a[:len(y)-tau*(i+1),i])
+    
+    E1 = E[1:]/(E[:-1]+1e-10) 
+
+    return E1
+
+def embedding_via_imbalance(series, tau, max_lag, delta, k=1):
+    """
+    Given the time series, we compute the information imbalance between embeddings of different dimensions. 
+    
+    Parameters:
+        series (array-like): a time series of shape (n,)
+        tau (int): the time delay to be used in the embedding
+        max_lag (int): the maximum embedding dimension to be considered
+        k (int): the number of nearest neighbours for the estimation of the information imbalance
+    
+    """
+
+    y = np.zeros((np.ceil((len(series)-max_lag*tau)/delta).astype(int), max_lag+1))
+
+    for i in range(max_lag+1):
+        y[:,i] = series[i*tau:len(series)-max_lag*tau+i*tau:delta]
+
+    II = np.zeros(max_lag-1)
+
+    N=len(y)
+
+    y1_dist = distance_matrix(y[:,0].reshape([-1,1]), y[:,0].reshape([-1,1]))
+    r1 = rankdata(y1_dist, method='ordinal', axis=1)-1
+
+    for i in range(2,max_lag+1):
+        y1_dist = distance_matrix(y[:,:i], y[:,:i])
+        r2 = rankdata(y1_dist, method='ordinal', axis=1)-1
+
+        V=r2[(r1>0) * (r1<k+1)]*2/N/k
+        II[i-2] = np.sum(V)/N
+
+        r1 = +r2
+    
+    E = II[1:]/(II[:-1]+1e-10) 
+    
+    return E
+
 
 #def _parallel_curvature(points, eq_cons, distances, i=0, NN=50,  trials=10, n_constr=2 ):
 #    H = np.zeros((n_constr, len(points[0]), len(points[0])))
