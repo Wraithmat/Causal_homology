@@ -1288,7 +1288,10 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         """
         
         if cross_val is not None:
-                NN += int(cross_val[0]*NN)
+            NN += int(cross_val[0]*NN)
+
+        if subset is None:
+            subset =range(len(points))
 
         for i in tqdm(subset):
             H = np.zeros((n_constr, len(points[0]), len(points[0])))
