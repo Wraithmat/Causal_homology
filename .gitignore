@@ -13,6 +13,7 @@ Matteo.ipynb
 scripts/experiments_ring.py
 *.npy
 scripts/sets_vs_nonsets.py
+Benthic_time_series.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

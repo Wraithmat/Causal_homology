@@ -1386,13 +1386,12 @@ def delay_embedding(series, tau, max_lag, delta):
     """
     Given the time series, we compute the values of the estimator E1 (see Cao 1997 Physica D) for different embedding dimensions."""
 
-
     y = np.zeros((np.ceil((len(series)-max_lag*tau)/delta).astype(int), max_lag+1))
 
     for i in range(max_lag+1):
         y[:,i] = series[i*tau:len(series)-max_lag*tau+i*tau:delta]
 
-    a = np.zeros(((len(series)-max_lag*tau)//delta+1,max_lag-1))
+    a = np.zeros((np.ceil((len(series)-max_lag*tau)/delta).astype(int),max_lag-1))
 
     y1_dist = distance_matrix(y[:,0].reshape([-1,1]), y[:,0].reshape([-1,1]), p=2)
 
@@ -1407,7 +1406,7 @@ def delay_embedding(series, tau, max_lag, delta):
     E = np.zeros(max_lag-1)
 
     for i in range(max_lag-1):
-        E[i] = 1/(len(y)-tau*(i+1)) * np.sum(a[:len(y)-tau*(i+1),i])
+        E[i] = np.mean(a[:,i])
     
     E1 = E[1:]/(E[:-1]+1e-10) 
 
