@@ -1,4 +1,4 @@
-from pyclassify.utils import fast_smallest_ball, Cech_complex, homology_from_laplacian, homology_from_reduction, alpha_complex, collapsed_Cech_complex, collapsed_Cech_complex_with_sets, radius_selection, bayesian_multinomial_mode, max_principal_curvature
+from pyclassify.utils import fast_smallest_ball, Cech_complex, homology_from_laplacian, homology_from_reduction, alpha_complex, collapsed_Cech_complex, collapsed_Cech_complex_with_sets, radius_selection, bayesian_multinomial_mode, max_principal_curvature, alpha_complex_
 import copy
 import numpy as np
 from scipy.special import binom
@@ -49,6 +49,17 @@ def test_alpha_complex():
     # Test with a simple case
     points = np.array([[0,0],[1,1],[0,1],[1,1]])
     C = alpha_complex(points, 1.5, 2)
+    assert len(C[0]) == 4  # All points are in the first complex
+
+def test_alpha_complex_():
+    # Test empty input or one dimensional one
+    with pytest.raises(AssertionError):
+        alpha_complex_(np.array([[]]), 1, 2)
+        alpha_complex_(np.array([1,2,3]), 1, 2)
+
+    # Test with a simple case
+    points = np.array([[0,0],[1,1],[0,1],[1,1]])
+    C = alpha_complex_(points, 1.5, 2)
     assert len(C[0]) == 4  # All points are in the first complex
 
 def test_homology():
