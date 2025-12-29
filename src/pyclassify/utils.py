@@ -1093,7 +1093,7 @@ def bayesian_multinomial_mode(prior, samples, points, size=10000):
 
         return probs, var
 
-def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_mean', delta=0.1, return_all=False, seed=1970, subset=None):
+def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_mean', delta=0.1, return_all=False, generator=None, subset=None, Theiler=0):
     """
     We estimate the reach following Aamari et al. 2019. 
     If we use the method of 'harmonic_mean', we consider the tangent space to be estimated multiple times using PCA on the nearest neighbours of each point. Then an estimator of the distance of the points from the tangent space is built and used to estimate the reach.
@@ -1106,13 +1106,15 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
         method (function or string): only considered if n_stochastic[0]>1; if 'harmonic_mean', we estimate the expected value of the reciprocal, otherwise we use the method specified
         delta (float): you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations    
         subset (None or array): if None, the curvature is computed on all the points, otherwise it is computed only on the points in the subset. If an array, it must be an array of indices to be considered. If 'return_all' then 0 is returned for the curvature of the points which are not in the subset.
-        
+        Theiler (int): theiler window to avoid temporal correlations
     Returns:
         reach (float): the estimated reach of the dataset
     
     """
     
-    np.random.seed(seed)
+    if generator is None:
+        generator = np.random.default_rng()
+
     distances = distance_matrix(points, points)**2
 
     if return_all:
@@ -1126,13 +1128,15 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
                 subset =range(len(points))
             for i in tqdm(subset):
                 Nearest_neigh=np.argsort(distances[i])
+                if Theiler>0:
+                    Nearest_neigh = Nearest_neigh[np.abs(Nearest_neigh - i) > Theiler]
                 points_ = points-points[i]
 
                 norms = np.zeros((len(points), n_stochastic[0]))
                 mask = np.zeros((len(points), n_stochastic[0]))
                 mask[i] = np.inf
                 for j in range(n_stochastic[0]):
-                    random_selection = np.random.choice(Nearest_neigh[:NN+1],n_stochastic[1],replace=False) 
+                    random_selection = generator.choice(Nearest_neigh[:NN+1],n_stochastic[1],replace=False) 
                     
                     X = points_[random_selection]
                     C=1/(n_stochastic[1]-1)*X.T@X
@@ -1160,7 +1164,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
                 points_ = points-points[Nearest_neigh[0]]
 
                 random_selection = Nearest_neigh[:NN+1]
-                np.random.shuffle(random_selection)
+                generator.shuffle(random_selection)
 
                 mask = distances[i]>delta
 
@@ -1331,7 +1335,7 @@ def get_local_points(points, distances_row, NN):
     return X
 
 @profile
-def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, seed=1970, subset=None):
+def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
@@ -1344,9 +1348,12 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         d (int): the dimension of the manifold
         cross_val (None or tuple): if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
         subset (None or array): if None, the curvature is computed on all the points, otherwise it is computed only on the points in the subset. If an array, it must be an array of indices to be considered. If 'return_all' then 0 is returned for the curvature of the points which are not in the subset.
+        Theiler (int): theiler window to exclude temporally correlated points
+    Returns:
+        k_max (float or array-like): if return_all is False, it is a float representing the maximum principal curvature of the dataset, otherwise it is an array of floats with the maximum principal curvature at each point
     """
-
-    np.random.seed(seed)
+    if generator is None:
+        generator = np.random.default_rng()
 
     distances = distance_matrix(points, points)
 
@@ -1381,6 +1388,8 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
             list_constraints = [eq_cons]
             Nearest_neigh=np.argsort(distances[i])
 
+            if Theiler > 0:
+                Nearest_neigh = Nearest_neigh[np.abs(Nearest_neigh - i) > Theiler]
             X = points[Nearest_neigh[:NN+1]]
             X = X-X[0]
             #X = get_local_points(points, distances[i], NN)
@@ -1395,9 +1404,9 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
                         min_fun = np.inf
                         for k in range(trials):
                             if j==0:
-                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                                par0 = generator.random(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
                             else:
-                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
+                                par0 = generator.random(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
                                 par0 *= (1-jac_)
 
                             res = minimize(least_square_fit, par0, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
@@ -1410,13 +1419,13 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
                         min_fun = np.inf
                         for k in range(trials):
                             if j==0:
-                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                                par0 = generator.random(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
                             else:
-                                par0 = np.random.rand(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1) 
+                                par0 = generator.random(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
                                 par0 *= (1-jac_)
 
                             # We split the points in two parts, one for the fitting and one for the validation
-                            random_selection = np.random.choice(len(X), int(cross_val[1]*len(X)), replace=False)
+                            random_selection = generator.choice(len(X), int(cross_val[1]*len(X)), replace=False)
                             X_fit = X[random_selection]
                             X_val = X[np.setdiff1d(np.arange(len(X)), random_selection)]
 
