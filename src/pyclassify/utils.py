@@ -13,6 +13,7 @@ from scipy.optimize import minimize, shgo
 from tqdm import tqdm
 from numba import njit
 from scipy.stats import rankdata
+from scipy.spatial.distance import pdist, squareform
 
 
 """
@@ -141,6 +142,37 @@ def aamari_sparsification(points, N=300, initial=0):
 
     return np.array(selected_points)
 
+def reach_aware_sparsification(points, reach_estimate, subset, final_number_of_points):
+    """
+    Given a point cloud and an estimate of the reach, we select a subset of points ensuring a constant density within the balls.
+
+    Parameters:
+        points (ndarray): a NxD array with the positions of datapoints
+        reach_estimate (float): estimate of the reach of the manifold
+        subset (list): list of indices of points to be considered for the sparsification
+        initial (int): index of the initial point
+        final_number_of_points (int): number of datapoints to be selected
+    Returns:
+        indices (ndarray): a N array containing the list of selected points, it is a sublist of subset
+    """
+
+
+    distances = squareform(pdist(points[subset]))
+    np.fill_diagonal(distances, np.inf)
+
+    while len(subset) > final_number_of_points:
+        # compute the number of points within reach_estimate for each point in subset
+        densities = []
+        for i in range(len(subset)):
+            densities.append(np.sum(distances[i] < reach_estimate[i]))
+        # remove the point with the highest density
+        index_to_remove = np.argmax(densities)
+        subset.pop(index_to_remove)
+        distances = np.delete(distances, index_to_remove, axis=0)
+        distances = np.delete(distances, index_to_remove, axis=1)
+
+    return np.array(subset)
+   
 @profile
 def _project_affine_space(p, points, eps=1e-9):
     """
@@ -1369,7 +1401,7 @@ def get_local_points(points, distances_row, NN):
     return X
 
 @profile
-def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0, aamari = False, delta=0.1):
+def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0, aamari = False, delta=0.1, tol=1e-12):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
@@ -1383,7 +1415,10 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         cross_val (None or tuple): if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
         subset (None or array): if None, the curvature is computed on all the points, otherwise it is computed only on the points in the subset. If an array, it must be an array of indices to be considered. If 'return_all' then 0 is returned for the curvature of the points which are not in the subset.
         Theiler (int): theiler window to exclude temporally correlated points
-    Returns:
+        aamari (bool): if True, we use the tangent plane from the implicit fit also to estimate the reach as in Aamari et al. 2019
+        delta (float): you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations (used only when aamari is True)
+        tol (float): tolerance for the optimization procedure
+        Returns:
         k_max (float or array-like): if return_all is False, it is a float representing the maximum principal curvature of the dataset, otherwise it is an array of floats with the maximum principal curvature at each point
     """
     if generator is None:
@@ -1417,7 +1452,11 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
             subset =range(len(points))
 
         if aamari:
-            reach = np.inf
+            if return_all:
+                reach = np.zeros(len(points))
+            else:
+                reach = np.inf
+
 
         for i in tqdm(subset):
             H = np.zeros((n_constr, len(points[0]), len(points[0])))
@@ -1469,19 +1508,20 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
                             X_fit = X[random_selection]
                             X_val = X[np.setdiff1d(np.arange(len(X)), random_selection)]
 
-                            res = minimize(least_square_fit, par0, args=(X_fit,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
+                            res = minimize(least_square_fit, par0, args=(X_fit,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints, tol=tol)
+                            # TODO: implement the version in which you use lagrange multipliers to enforce the constraints, minimization can then be performed exactly, you only need a root finding algorithm for lambda
 
                             # We compute the loss on the validation set
                             loss_val = least_square_fit(res.x, X_val)
 
                             if k == 0 or loss_val < min_fun:
-                                min_fun = res.fun
+                                min_fun = loss_val # res.fun
                                 par = res.x
-
+                                                
                         # We use the best fit to estimate the curvature with all the points
-                        res = minimize(least_square_fit, par, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints)
-                        if res.success:
-                            par = res.x
+                        #res = minimize(least_square_fit, par, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints, tol=tol)
+                        #if res.success:
+                        #    par = res.x
                             
                 
                 # Add one constraint to ensure 'orthogonality' of the implicit functions
@@ -1523,7 +1563,10 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
                 m = np.ones(len(points), dtype=bool)
                 m[distances[i]<=delta] = False
 
-                reach=min(reach,min((distances[i,m]**2 / norms[m] )))
+                if return_all:
+                    reach[i] = min((distances[i,m]**2 / norms[m] ))
+                else:
+                    reach=min(reach,min((distances[i,m]**2 / norms[m] )))
     else:
         raise NotImplementedError
     
