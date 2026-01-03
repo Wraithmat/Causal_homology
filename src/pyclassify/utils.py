@@ -1162,7 +1162,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
                 
                 if Theiler > 0:
                     #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = np.inf
-                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
+                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
 
 
                 Nearest_neigh=np.argsort(distances[i])
@@ -1186,7 +1186,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
                 # We compute the mean of the reciprocals. This estimates the factor (1/2d(x-y,T_xM))
                 if Theiler > 0:
                     #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = 0
-                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = 0 # this line implements a subsampling similar to Theiler windowing approach
+                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = 0 # this line implements a subsampling similar to Theiler windowing approach
 
                 
                 N_points = np.count_nonzero(norms, axis=1)
@@ -1204,7 +1204,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
             for i in tqdm(range(len(points))):
                 if Theiler > 0:
                     #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = np.inf
-                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
+                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
 
 
                 Nearest_neigh=np.argsort(distances[i])
@@ -1215,7 +1215,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
 
                 if Theiler > 0:
                     #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = 0
-                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = 0 # this line implements a subsampling similar to Theiler windowing approach
+                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = 0 # this line implements a subsampling similar to Theiler windowing approach
 
                 mask = distances[i]>delta
 
@@ -1240,7 +1240,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
         for i in tqdm(range(len(points))):
             if Theiler > 0:
                 #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = np.inf
-                distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
+                distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
 
 
             Nearest_neigh=np.argsort(distances[i])
@@ -1254,7 +1254,7 @@ def reach_estimation(points, NN=10, d=2, n_stochastic=(0,0), method='harmonic_me
 
             if Theiler > 0:
                 #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = 0
-                distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = 0 # this line implements a subsampling similar to Theiler windowing approach
+                distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = 0 # this line implements a subsampling similar to Theiler windowing approach
 
             m = np.ones(len(points), dtype=bool)
             m[distances[i]<=delta] = False
@@ -1465,7 +1465,7 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
 
             if Theiler > 0:
                 #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = np.inf # this line for the true Theiler
-                distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
+                distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
 
             Nearest_neigh=np.argsort(distances[i])
 
@@ -1559,7 +1559,7 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
 
                 if Theiler > 0:
                     #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = 0
-                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler == 0] = 0# this line implements a subsampling similar to Theiler windowing approach
+                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = 0# this line implements a subsampling similar to Theiler windowing approach
                 m = np.ones(len(points), dtype=bool)
                 m[distances[i]<=delta] = False
 
