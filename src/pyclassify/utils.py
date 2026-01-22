@@ -1642,6 +1642,36 @@ def embedding_via_imbalance(series, tau, max_lag, delta, k=1):
     return E
 
 
+def epsilon_sparsification(points, epsilon, epsilon_cut=None):
+    """
+    Given a set of points, we return a subset of points that is still epsilon dense (assuming that initial density was at least epsilon/2).
+
+    Parameters:
+        points (array-like): an NxD array with the position of the datapoints
+        epsilon (float): the minimum distance between points in the subset
+    Returns:
+        indices (list): a list of indices of the points that are in the subset
+    """
+    if epsilon_cut is not None:
+        epsilon_cut = epsilon/2
+    # Version starting from a random point
+    selected_points = np.ones(len(points), dtype=bool)
+
+    l = []
+
+    while True:
+        p=next(i  for i,x in enumerate(selected_points) if x)
+        distances = np.linalg.norm(points-points[p], axis=1)
+        selected_points[distances<epsilon_cut]=False
+        selected_points[p]=False
+        l.append(p)
+        if np.sum(selected_points)==0:
+            break
+    
+    for p in l:
+        selected_points[p]=True
+    return selected_points
+
 #def _parallel_curvature(points, eq_cons, distances, i=0, NN=50,  trials=10, n_constr=2 ):
 #    H = np.zeros((n_constr, len(points[0]), len(points[0])))
 #    list_constraints = [eq_cons]
