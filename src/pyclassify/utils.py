@@ -14,6 +14,7 @@ from tqdm import tqdm
 from numba import njit
 from scipy.stats import rankdata
 from scipy.spatial.distance import pdist, squareform
+#import mpmath as mp
 
 
 """
@@ -1401,7 +1402,7 @@ def get_local_points(points, distances_row, NN):
     return X
 
 @profile
-def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0, aamari = False, delta=0.1, tol=1e-12):
+def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0, aamari = False, delta=0.1, tol=1e-12, low_memory=False):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
@@ -1418,13 +1419,18 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
         aamari (bool): if True, we use the tangent plane from the implicit fit also to estimate the reach as in Aamari et al. 2019
         delta (float): you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations (used only when aamari is True)
         tol (float): tolerance for the optimization procedure
-        Returns:
+        low_memory (bool): if True, we avoid storing large matrices
+    Returns:
         k_max (float or array-like): if return_all is False, it is a float representing the maximum principal curvature of the dataset, otherwise it is an array of floats with the maximum principal curvature at each point
     """
+
+    assert d < len(points[0]), "The dimension of the manifold must be smaller than the ambient dimension"
+
     if generator is None:
         generator = np.random.default_rng()
 
-    distances = distance_matrix(points, points)
+    if not low_memory:
+        distances = distance_matrix(points, points)
 
     if return_all:
         k_max = np.zeros(len(points))
@@ -1459,18 +1465,24 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
 
 
         for i in tqdm(subset):
+            if low_memory:
+                distances = distance_matrix(points[i].reshape(1,-1), points)
+                j__=+i
+                i=0
+            else:
+                j__=i
             H = np.zeros((n_constr, len(points[0]), len(points[0])))
             grads = np.zeros((n_constr, len(points[0])))
             list_constraints = [eq_cons]
 
             if Theiler > 0:
                 #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = np.inf # this line for the true Theiler
-                distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
+                distances[i, np.abs(np.arange(len(points)) - j__) % Theiler != 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
 
             Nearest_neigh=np.argsort(distances[i])
 
             X = points[Nearest_neigh[:NN+1]]
-            X = X-points[i]
+            X = X-points[j__]
             #X = get_local_points(points, distances[i], NN)
             for j in range(n_constr):
                 par = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
@@ -1545,13 +1557,13 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
             res_2 = shgo(hessian_norm_neg, [(-np.inf,np.inf)]*len(X[0]), args=(H,G_cross,grads))
 
             if return_all:
-                k_max[i] = -res_2.fun
+                k_max[j__] = -res_2.fun
             else:
                 k_max = max(k_max,-res_2.fun)
             
             if aamari:
                 tangent_proj = np.eye(len(points[0])) - grads.T@G_cross@grads
-                points_ = points-points[i]
+                points_ = points-points[j__]
                 #points_ = points_@tangent_proj #we project directly on the "mixture" of the tangent space
 
                 points_ = points_-(points_@tangent_proj) #we remove the part that is on the tangent space and leave the orthogonal one
@@ -1559,12 +1571,12 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
 
                 if Theiler > 0:
                     #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = 0
-                    distances[i, np.abs(np.arange(len(points)) - i) % Theiler != 0] = 0# this line implements a subsampling similar to Theiler windowing approach
+                    distances[i, np.abs(np.arange(len(points)) - j__) % Theiler != 0] = 0# this line implements a subsampling similar to Theiler windowing approach
                 m = np.ones(len(points), dtype=bool)
                 m[distances[i]<=delta] = False
 
                 if return_all:
-                    reach[i] = min((distances[i,m]**2 / norms[m] ))
+                    reach[j__] = min((distances[i,m]**2 / norms[m] ))
                 else:
                     reach=min(reach,min((distances[i,m]**2 / norms[m] )))
     else:
@@ -1573,6 +1585,214 @@ def max_principal_curvature(points, NN=50, implicit=True, trials=10, d=2, cross_
     if aamari:
         return reach, k_max
     return k_max
+
+def _point_to_vector(point):
+    '''Builds the vector representation of a point for the implicit quadratic fit'''
+    vector = np.zeros((len(point)*(len(point)+1))//2 + len(point) + 1)
+    vector[0]=1
+    vector[1:len(point)+1]=point
+    index = np.triu_indices(len(point),1)
+    vector[len(point)+1:-len(point)]= point[index[0]]*point[index[1]]
+    vector[-len(point):]= 0.5*point**2
+    return vector
+
+point_to_vector = np.vectorize(_point_to_vector, signature='(n)->(m)')
+
+def build_M_matrix(X, remove_columns):
+    mask = np.ones((len(X[0])*(len(X[0])+1))//2 + len(X[0]) + 1, dtype=bool)
+    for i in remove_columns:
+        mask[i] = False
+    
+    M = np.zeros(((len(X[0])*(len(X[0])+1))//2 + len(X[0]) + 1-len(remove_columns), (len(X[0])*(len(X[0])+1))//2 + len(X[0]) + 1-len(remove_columns)))
+    vector = point_to_vector(X)
+
+    M = np.einsum('ki,kj->ij', vector[:,mask], vector[:,mask])
+
+    M /= len(X)
+
+    return M
+
+def make_par(res, remove_columns):
+    """Given the result of the eigenvalue problem on the M matrix, it reconstructs the parameter vector adding the columns in remove_columns (oss: they are set to zero)"""
+    par = np.zeros(len(res)+len(remove_columns))
+    idx = 0
+    for i in range(len(par)):
+        if i in remove_columns:
+            par[i] = 0
+        else:
+            par[i] = res[idx]
+            idx += 1
+    return par
+
+def max_principal_curvature_inversion(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0, aamari = False, delta=0.1, tol=1e-12, low_memory=False):
+    """
+    We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
+    In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
+
+    Parameters:
+        points (array-like): an NxD array with the position of the datapoints
+        NN (int): the number of nearest neighbours to be considered to estimate the curvature
+        implicit (bool): if True, we estimate the curvature using an implicit representation of the manifold as the locus of zeros of a degree 2 polynomial.
+        trials (int or str): the number of initializations used to estimate the minimum of the fit (with SLSQP) or a method for global minimization (for now only 'shgo' is implemented, but it might work only in very small dimensions)
+        d (int): the dimension of the manifold
+        cross_val (None or tuple): if None, the standard strategy is applied, if a tuple with two floating numbers, the first is the percentual of points added to NN, the second is the percentual of points used at each iteration. The fitting procedure is performed 'trials' times with a subset of the nearest neighbours points and the best fit is chosen depending on the value of the loss function on the remaining points. Finally, the best fit is used as a starting point for the optimization with the whole set of points.
+        subset (None or array): if None, the curvature is computed on all the points, otherwise it is computed only on the points in the subset. If an array, it must be an array of indices to be considered. If 'return_all' then 0 is returned for the curvature of the points which are not in the subset.
+        Theiler (int): theiler window to exclude temporally correlated points
+        aamari (bool): if True, we use the tangent plane from the implicit fit also to estimate the reach as in Aamari et al. 2019
+        delta (float): you should enforce delta sparsity in your dataset; this is the distance thrshold to consider good approximations (used only when aamari is True)
+        tol (float): tolerance for the optimization procedure
+        low_memory (bool): if True, we avoid storing large matrices
+    Returns:
+        k_max (float or array-like): if return_all is False, it is a float representing the maximum principal curvature of the dataset, otherwise it is an array of floats with the maximum principal curvature at each point
+    """
+
+    assert d < len(points[0]), "The dimension of the manifold must be smaller than the dimension of the ambient space"
+
+    if generator is None:
+        generator = np.random.default_rng()
+
+    if not low_memory:
+        distances = distance_matrix(points, points)
+
+    if return_all:
+        k_max = np.zeros(len(points))
+    else:
+        k_max = -np.inf
+
+    if implicit:
+        
+        n_constr = len(points[0])-d
+        
+        """taylor_approximation = f[0] + grad_f@x + 0.5 * x.T@hessian_f@x ->
+        par[0] + par[1:len(x)+1]@x+0.5 * x.T @ par[len(x)+1:].reshape(len(x),len(x))@x 
+        
+        We need par to be minimized and points_ to be a tuple of points
+        We know that the hessian is symmetric, and that the function must evaluate 0 at the points
+        """
+        
+        if cross_val is not None:
+            NN += int(cross_val[0]*NN)
+
+        if subset is None:
+            subset =range(len(points))
+
+        if aamari:
+            if return_all:
+                reach = np.zeros(len(points))
+            else:
+                reach = np.inf
+
+
+        for i in tqdm(subset):
+            if low_memory:
+                distances = distance_matrix(points[i].reshape(1,-1), points)
+                j__=+i
+                i=0
+            else:
+                j__=i
+            H = np.zeros((n_constr, len(points[0]), len(points[0])))
+            grads = np.zeros((n_constr, len(points[0])))
+
+            if Theiler > 0:
+                #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = np.inf # this line for the true Theiler
+                distances[i, np.abs(np.arange(len(points)) - j__) % Theiler != 0] = np.inf # this line implements a subsampling similar to Theiler windowing approach
+
+            Nearest_neigh=np.argsort(distances[i])
+
+            X = points[Nearest_neigh[:NN+1]]
+            X = X-points[j__]
+
+            remove_columns = []
+
+            for j in range(n_constr):
+                par = np.zeros(len(X[0])*(len(X[0])+1)//2 + len(X[0]) + 1)
+                if cross_val is None:                        
+                    M = build_M_matrix(X, np.array(remove_columns))
+
+                    #M = np.delete(M, remove_columns, axis=0)
+                    #M = np.delete(M, remove_columns, axis=1)
+
+                    _, res = eigh(M)
+
+                    res = res[:,0]
+
+                    par = make_par(res, remove_columns)
+
+                else:
+                    # We use a cross-validation procedure to estimate the best fit
+                    min_fun = np.inf
+                    for k in range(trials):
+                
+                        # We split the points in two parts, one for the fitting and one for the validation
+                        random_selection = generator.choice(len(X), int(cross_val[1]*len(X)), replace=False)
+                        X_fit = X[random_selection]
+                        X_val = X[np.setdiff1d(np.arange(len(X)), random_selection)]
+                        #return X
+                        M = build_M_matrix(X_fit, np.array(remove_columns))
+                        #M = np.delete(M, remove_columns, axis=0)
+                        #M = np.delete(M, remove_columns, axis=1)
+                        _, res = eigh(M)
+                        #_, res = mp.eigsy(mp.matrix(M))
+
+                        res = res[:,0]
+                        # We compute the loss on the validation set
+                        loss_val = least_square_fit(make_par(res, remove_columns), X_val)
+
+                        if k == 0 or loss_val < min_fun:
+                            min_fun = loss_val # res.fun
+                            par = make_par(res, remove_columns)
+                                            
+                    # We use the best fit to estimate the curvature with all the points
+                    #res = minimize(least_square_fit, par, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints, tol=tol)
+                    #if res.success:
+                    #    par = res.x
+                            
+                
+                # Add one constraint to ensure 'orthogonality' of the implicit functions
+                x_rem = np.argmax(np.abs(par)) # remove the biggest element
+                remove_columns.append(x_rem)
+
+                H[j] = make_hessian(par[len(X[0])+1:], len(X[0]))
+                grads[j] = par[1:len(X[0])+1]
+            
+            G = grads@grads.T
+            G_cross = np.linalg.pinv(G)
+
+            #eq_cons_proj = {'type': 'eq',
+            #            'fun' : lambda x: np.sum(((np.eye(len(x))-grads.T@G_cross@grads)@x)**2)-1}
+            #res_2 = shgo(hessian_norm_neg, [(0,1)]*len(X[0]), constraints=eq_cons_proj, args=(H,G_cross,grads))
+            res_2 = shgo(hessian_norm_neg, [(-np.inf,np.inf)]*len(X[0]), args=(H,G_cross,grads))
+
+            if return_all:
+                k_max[j__] = -res_2.fun
+            else:
+                k_max = max(k_max,-res_2.fun)
+            
+            if aamari:
+                tangent_proj = np.eye(len(points[0])) - grads.T@G_cross@grads
+                points_ = points-points[j__]
+                #points_ = points_@tangent_proj #we project directly on the "mixture" of the tangent space
+
+                points_ = points_-(points_@tangent_proj) #we remove the part that is on the tangent space and leave the orthogonal one
+                norms = 2*np.sum(points_**2, axis=1)**0.5
+
+                if Theiler > 0:
+                    #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = 0
+                    distances[i, np.abs(np.arange(len(points)) - j__) % Theiler != 0] = 0# this line implements a subsampling similar to Theiler windowing approach
+                m = np.ones(len(points), dtype=bool)
+                m[distances[i]<=delta] = False
+
+                if return_all:
+                    reach[j__] = min((distances[i,m]**2 / norms[m] ))
+                else:
+                    reach=min(reach,min((distances[i,m]**2 / norms[m] )))
+    else:
+        raise NotImplementedError
+    
+    if aamari:
+        return reach, k_max
+    return k_max
+
 
 def delay_embedding(series, tau, max_lag, delta):
     """
@@ -1652,7 +1872,7 @@ def epsilon_sparsification(points, epsilon, epsilon_cut=None):
     Returns:
         indices (list): a list of indices of the points that are in the subset
     """
-    if epsilon_cut is not None:
+    if epsilon_cut is None:
         epsilon_cut = epsilon/2
     # Version starting from a random point
     selected_points = np.ones(len(points), dtype=bool)
@@ -1671,6 +1891,29 @@ def epsilon_sparsification(points, epsilon, epsilon_cut=None):
     for p in l:
         selected_points[p]=True
     return selected_points
+
+def nyogi_cleaning(points, s, k=5, quantile=None):
+    """
+    Given a set of points, we remove the points that are in low density regions using the Nyogi cleaning algorithm.
+
+    Parameters:
+        points (array-like): an NxD array with the position of the datapoints
+        s (float): the thickening used to estimate the nearest neighbours
+        k (int): the number of nearest neighbours to be considered as a threshold
+        quantile (float): if provided, k is ignored and the density threshold is set as the given quantile of the densities of the number of nearest neighbours
+    Returns:
+        indices (list): a list of indices of the points that are kept
+    """
+
+    distances = distance_matrix(points, points)
+    numbers_nn = np.sum(distances < s, axis=1) - 1  # we do not count the point itself
+    if quantile is not None:
+        assert 0 < quantile < 1, "Quantile must be between 0 and 1"
+        k = int(np.quantile(numbers_nn, quantile))
+    selected_points = numbers_nn >= k    
+
+    return selected_points
+
 
 #def _parallel_curvature(points, eq_cons, distances, i=0, NN=50,  trials=10, n_constr=2 ):
 #    H = np.zeros((n_constr, len(points[0]), len(points[0])))
