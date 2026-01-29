@@ -1999,6 +1999,50 @@ def nyogi_cleaning(points, s, k=5, quantile=None):
 
     return selected_points
 
+def maximum_epsilon(R, delta=0, manifold=True):
+    """
+    This function uses the results from Attali et al. Tight Bounds for the Learning of Homtopy à la Nyogi,...
+
+    Params:
+        R: float; a constant satyisfyng R < reach(M)
+        delta: float; the noise level measured as the Hausdorff distance from the object to the (noisy) samples
+        manifold: bool; if True, we assume that the object is a manifold, otherwise it is a general set of positive reach
+    Returns:
+        epsilon: float; the maximum epsilon that can be used to be sure that the union of balls of radius epsilon around the points is homotopy equivalent to the object
+    """
+    if manifold:
+        epsilon_max = np.sqrt((R-delta)**2-(4*np.sqrt(2)-5)*R**2)
+    else:
+        epsilon_max = -np.sqrt(2)*delta+(np.sqrt(2)-1)*R
+    return epsilon_max
+
+def acceptable_radiuses(epsilon, R, delta=0, manifold=True):
+    """
+    This function uses the results from Attali et al. Tight Bounds for the Learning of Homtopy à la Nyogi,...
+
+
+    Params:
+        epsilon: float; the density of the point cloud measured as the Hausdorff distance from the object to the (noisy) samples
+        R: float; a constant satyisfyng R < reach(M)
+        delta: float; the noise level measured as the Hausdorff distance from the object to the (noisy) samples
+        manifold: bool; if True, we assume that the object is a manifold, otherwise it is a general set of positive reach
+    Returns:
+        radiuses: tuple; the minimum and maximum radiuses that can be used to be sure that the union of balls of radius r around the points is homotopy equivalent to the object
+    """
+
+    assert epsilon <= maximum_epsilon(R, delta, manifold), "Epsilon is too large for the given R and delta, no bound is computed for these radiuses"
+
+    if manifold:
+        Delta = R**(-2)*(epsilon**2-(R-delta)**2)**2-10*(epsilon**2-(R-delta)**2)-7*R**2
+        alpha_min = 0.25*(((R-delta)**2+R**2-epsilon**2)/R-np.sqrt(Delta))
+        alpha_max = 0.25*(((R-delta)**2+R**2-epsilon**2)/R+np.sqrt(Delta))
+        r_min = np.sqrt((1+alpha_min/R)*epsilon**2+alpha_min**2+alpha_min/R*(R**2-(R-delta)**2))
+        r_max = np.sqrt((R-delta)**2-(R-alpha_max)**2)
+    else:
+        Delta = 2*(R-delta)**2 - (R + epsilon)**2
+        r_min = 0.5*(R+epsilon-np.sqrt(Delta))
+        r_max = 0.5*(R+epsilon+np.sqrt(Delta))
+    return (r_min, r_max)
 
 #def _parallel_curvature(points, eq_cons, distances, i=0, NN=50,  trials=10, n_constr=2 ):
 #    H = np.zeros((n_constr, len(points[0]), len(points[0])))
