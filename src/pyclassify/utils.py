@@ -1282,25 +1282,19 @@ def _make_hessian(par_hessian, n):
 
 @njit
 def make_hessian(par_hessian, n):
-    n = int(n)  # ensure integer for Numba
+    n = int(n)
     H = np.zeros((n, n))
+    # Fill upper triangle (excluding diagonal)
     idx = 0
-
-    # Fill upper triangle excluding diagonal
     for i in range(n):
         for j in range(i + 1, n):
-            H[i, j] = par_hessian[idx]
+            val = par_hessian[idx]
+            H[i, j] = val
+            H[j, i] = val  # Symmetric assignment
             idx += 1
-
-    # Symmetrize by adding transpose
-    for i in range(n):
-        for j in range(i + 1, n):
-            H[j, i] = H[i, j]
-
     # Fill diagonal
     for i in range(n):
         H[i, i] = par_hessian[-n + i]
-
     return H
 
 @njit
@@ -1362,6 +1356,66 @@ def least_square_fit_jac(par, points_):
     jac[len(points_[0])+1:] = der_hessian
 
     return 1/len(points_)*np.sum(loss**2), jac
+
+def build_basis_tangent(grads):
+    """Given that the gradients span the normal space, we build an orthonormal basis of the tangent space, by Gram-Schmidt procedure."""
+
+    if not np.isclose(grads@grads.T, np.eye(grads.shape[0])).all():
+        grads_orthonormal = (grads[0]/np.linalg.norm(grads[0])).reshape(1,-1)
+        for i in range(1, grads.shape[0]):
+            vector = grads[i] - (grads_orthonormal @ grads[i]).T @ grads_orthonormal
+            vector = vector/np.linalg.norm(vector)
+            grads_orthonormal = np.vstack([grads_orthonormal, vector])
+        grads = grads_orthonormal
+
+    extra_vectors = np.random.rand(grads.shape[1]-grads.shape[0], grads.shape[1])
+    grads = grads/np.linalg.norm(grads, axis=1, keepdims=True)
+    for vector in extra_vectors:
+        vector = vector - (grads @ vector).T @ grads
+        while np.linalg.norm(vector) < 1e-5:
+            vector = np.random.rand(grads.shape[1])
+            vector = vector - (grads @ vector).T @ grads
+        vector = vector/np.linalg.norm(vector)
+        grads = np.vstack([grads, vector])
+    return grads[-len(extra_vectors):]
+
+@njit
+def maximize_with_tangent_basis(w0, H, G_cross, basis_tangent, lr=1e-2, tol=1e-6, max_iter=50000):
+    w = w0 / np.linalg.norm(w0)
+
+    time=0
+    while time<max_iter:
+        time+=1
+        # Let's write down the gradient with respect to w
+        grad = np.zeros(len(w))
+        quadratic_part = np.zeros(len(H))
+        for i in range(len(H)):
+            vector = (w @ basis_tangent)
+            quadratic_part[i] = vector @ H[i] @ vector.T
+        for j in range(len(w)):
+            e_j = np.zeros(len(w))
+            e_j[j] = 1
+            delta_v = e_j @ basis_tangent
+            delta_quadratic_part = np.zeros(len(H))
+            for i in range(len(H)):
+                vector = (w @ basis_tangent)
+                delta_quadratic_part[i] = 2 * delta_v @ H[i] @ vector.T
+            delta_matrix_norm = 2 * delta_quadratic_part.T @ G_cross @ quadratic_part
+            grad[j] = delta_matrix_norm
+        grad = (np.eye(len(w)) - np.outer(w, w)) @ grad.T
+        gradient_norm = np.linalg.norm(grad)
+        if gradient_norm < tol:
+            break
+
+        w = w + lr * grad.T
+        w = w / np.linalg.norm(w)
+    matrix_norm = np.sqrt(quadratic_part.T @ G_cross @ quadratic_part)
+    return w, matrix_norm
+
+@njit
+def _maximize_with_tangent_basis(w0, H, G_cross, basis_tangent, lr=1e-2, tol=1e-6, max_iter=50000):
+    return maximize_with_tangent_basis(w0, H, G_cross, basis_tangent, lr, tol, max_iter)[1]
+
 
 #@njit
 #def _hessian_norm_neg(v, H):
@@ -1624,7 +1678,24 @@ def make_par(res, remove_columns):
             idx += 1
     return par
 
-def max_principal_curvature_inversion(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0, aamari = False, delta=0.1, tol=1e-12, low_memory=False):
+def _multiple_fitting(X, cross_val, remove_columns, generator):
+                
+    # We split the points in two parts, one for the fitting and one for the validation
+    random_selection = generator.choice(len(X), int(cross_val[1]*len(X)), replace=False)
+    X_fit = X[random_selection]
+    X_val = X[np.setdiff1d(np.arange(len(X)), random_selection)]
+    
+    M = build_M_matrix(X_fit, np.array(remove_columns))
+    _, res = eigh(M)
+
+    res = res[:,0]
+    # We compute the loss on the validation set
+    loss_val = least_square_fit(make_par(res, remove_columns), X_val)
+
+    return loss_val, res
+    
+@profile                       
+def max_principal_curvature_inversion(points, NN=50, implicit=True, trials=10, d=2, cross_val=None, return_all=False, generator=None, subset=None, Theiler=0, aamari = False, delta=0.1, low_memory=False, iters_shgo=1, n_shgo=100, trials_maximization=10, tol=1e-12):
     """
     We propose two ways to estimate locally the maximum principal curvature of a point cloud. 
     In one case we approximate locally a chart of the manifold with a Taylor expansion, in the other case we describe the manifold with an implicit representation that is locally approximated with a Taylor expansion.
@@ -1720,28 +1791,30 @@ def max_principal_curvature_inversion(points, NN=50, implicit=True, trials=10, d
 
                 else:
                     # We use a cross-validation procedure to estimate the best fit
-                    min_fun = np.inf
-                    for k in range(trials):
+                    #min_fun = np.inf
+                    #for k in range(trials):
                 
-                        # We split the points in two parts, one for the fitting and one for the validation
-                        random_selection = generator.choice(len(X), int(cross_val[1]*len(X)), replace=False)
-                        X_fit = X[random_selection]
-                        X_val = X[np.setdiff1d(np.arange(len(X)), random_selection)]
-                        #return X
-                        M = build_M_matrix(X_fit, np.array(remove_columns))
-                        #M = np.delete(M, remove_columns, axis=0)
-                        #M = np.delete(M, remove_columns, axis=1)
-                        _, res = eigh(M)
-                        #_, res = mp.eigsy(mp.matrix(M))
+                    #    # We split the points in two parts, one for the fitting and one for the validation
+                    #    random_selection = generator.choice(len(X), int(cross_val[1]*len(X)), replace=False)
+                    #    X_fit = X[random_selection]
+                    #    X_val = X[np.setdiff1d(np.arange(len(X)), random_selection)]
+                    #    M = build_M_matrix(X_fit, np.array(remove_columns))
+                    #    
+                    #    _, res = eigh(M)
 
-                        res = res[:,0]
-                        # We compute the loss on the validation set
-                        loss_val = least_square_fit(make_par(res, remove_columns), X_val)
+                    #    res = res[:,0]
+                    #    # We compute the loss on the validation set
+                    #    loss_val = least_square_fit(make_par(res, remove_columns), X_val)
 
-                        if k == 0 or loss_val < min_fun:
-                            min_fun = loss_val # res.fun
-                            par = make_par(res, remove_columns)
-                                            
+                    #    if k == 0 or loss_val < min_fun:
+                    #        min_fun = loss_val # res.fun
+                    #        par = make_par(res, remove_columns)
+
+                    ss = generator.spawn(trials)
+
+                    loss_vals, res_list = zip(*Parallel(n_jobs=-1)(delayed(_multiple_fitting)(X, cross_val, remove_columns, ss[i]) for i in range(trials)) )
+                    
+                    par = make_par(res_list[np.argmin(loss_vals)], remove_columns)
                     # We use the best fit to estimate the curvature with all the points
                     #res = minimize(least_square_fit, par, args=(X,), method='SLSQP', jac=jac_least_square_fit, constraints=list_constraints, tol=tol)
                     #if res.success:
@@ -1757,16 +1830,29 @@ def max_principal_curvature_inversion(points, NN=50, implicit=True, trials=10, d
             
             G = grads@grads.T
             G_cross = np.linalg.pinv(G)
-
             #eq_cons_proj = {'type': 'eq',
             #            'fun' : lambda x: np.sum(((np.eye(len(x))-grads.T@G_cross@grads)@x)**2)-1}
             #res_2 = shgo(hessian_norm_neg, [(0,1)]*len(X[0]), constraints=eq_cons_proj, args=(H,G_cross,grads))
-            res_2 = shgo(hessian_norm_neg, [(-np.inf,np.inf)]*len(X[0]), args=(H,G_cross,grads))
+            if iters_shgo is not None and iters_shgo>=1:
+                res_2 = shgo(hessian_norm_neg, [(-np.inf,np.inf)]*len(X[0]), args=(H,G_cross,grads), iters=iters_shgo, n=n_shgo)
 
-            if return_all:
-                k_max[j__] = -res_2.fun
+                if return_all:
+                    k_max[j__] = -res_2.fun
+                else:
+                    k_max = max(k_max,-res_2.fun)
             else:
-                k_max = max(k_max,-res_2.fun)
+                basis = build_basis_tangent(grads)
+                k_approx = -np.inf
+                w0 = generator.normal(size=(trials_maximization, len(basis)))
+                w0 /= np.linalg.norm(w0, axis=1)[:, np.newaxis]
+                k = Parallel(n_jobs=-1)(delayed(_maximize_with_tangent_basis)(w0[t], H, G_cross, basis, tol=tol) for t in range(trials_maximization))
+                #for t in range(trials_maximization):
+                #    _, matrix_norm = maximize_with_tangent_basis(w0[t], H, G_cross, basis)
+                k_approx = np.max(k)
+                if return_all:
+                    k_max[j__] = k_approx
+                else:
+                    k_max = max(k_max, k_approx)
             
             if aamari:
                 tangent_proj = np.eye(len(points[0])) - grads.T@G_cross@grads
@@ -1777,7 +1863,6 @@ def max_principal_curvature_inversion(points, NN=50, implicit=True, trials=10, d
                 norms = 2*np.sum(points_**2, axis=1)**0.5
 
                 if Theiler > 0:
-                    #distances[i, np.abs(np.arange(len(points)) - i) <= Theiler] = 0
                     distances[i, np.abs(np.arange(len(points)) - j__) % Theiler != 0] = 0# this line implements a subsampling similar to Theiler windowing approach
                 m = np.ones(len(points), dtype=bool)
                 m[distances[i]<=delta] = False
