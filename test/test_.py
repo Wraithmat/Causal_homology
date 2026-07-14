@@ -1,4 +1,4 @@
-from pyclassify.utils import fast_smallest_ball, Cech_complex, homology_from_laplacian, homology_from_reduction, alpha_complex, collapsed_Cech_complex, collapsed_Cech_complex_with_sets, radius_selection, bayesian_multinomial_mode, max_principal_curvature, alpha_complex_
+from pyclassify.utils import * #fast_smallest_ball, Cech_complex, homology_from_laplacian, homology_from_reduction, alpha_complex, collapsed_Cech_complex, collapsed_Cech_complex_with_sets, radius_selection, bayesian_multinomial_mode, max_principal_curvature, alpha_complex_
 import copy
 import numpy as np
 from scipy.special import binom
@@ -89,7 +89,13 @@ def test_reach_estimations():
 
     assert C>0.8 and C<1.2
 
-
+def test_border():
+    points = np.array([[0,0],[1,1],[0,1]])
+    D = 1
+    NN = 2
+    p_values = border_detection(points, D=D, NN=NN)
+    assert len(p_values) == len(points)
+    assert np.all(p_values >= 0) and np.all(p_values <= 1)
 
 
 
